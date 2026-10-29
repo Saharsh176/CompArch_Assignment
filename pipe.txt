@@ -1,0 +1,9 @@
+assembled 'tests/sample3_hazards.s' ok. entry point = 0x00000000
+running with 5-stage pipeline simulator...
+
+--- Pipeline Execution Summary ---
+Total Cycles   : 24
+Instructions   : 11
+Stalls         : 8
+Flushes        : 1
+CPI            : 2.18
