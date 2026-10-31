@@ -55,7 +55,6 @@ typedef struct {
     DecodedInstr instr;
     const InstructionHandler *handler;
     ControlSignals ctrl;
-    uint32_t alu_result; /* <-- Added this */
     uint32_t wb_val;
     uint32_t fault_addr;
 } MEMWB;
@@ -70,10 +69,14 @@ typedef struct {
     uint64_t retired;
     uint64_t stalls;
     uint64_t flushes;
+    uint64_t load_use_stalls;
+    uint64_t fwd_ex;
+    uint64_t fwd_mem;
+    int forwarding;
 } Pipeline;
 
 /* Function prototypes */
-void pipeline_init(Pipeline *p);
+void pipeline_init(Pipeline *p, int forwarding);
 CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem);
 void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cycles);
 

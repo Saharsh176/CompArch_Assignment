@@ -1,0 +1,31 @@
+W7 RISC-V Pipeline Lab Sheet 2 — verification results
+
+Build:
+  make clean && make
+  PASS — GCC C11, -Wall -Wextra -Wpedantic, no warnings.
+
+Automated tests:
+  make test
+  PASS — single-cycle tests.
+  PASS — pipeline tests.
+  PASS — architectural register comparison (x0-x31).
+  PASS — precise illegal-instruction, data-memory and instruction-fetch fault checks.
+  PASS — cycles = retired + stalls + flushes + 4 for normal terminating test programs.
+
+Pipeline measurements:
+  Program                         Cycles  Retired  Stalls  Flushes  CPI
+  sample1_sum_loop.s                108       53      40       11  2.038
+  sample2_mem_and_branches.s         26       13       8        1  2.000
+  sample3_hazards.s                  28       11      12        1  2.545
+  sample5_addi.s                     15        8       3        0  1.875
+  sample6_rv32i_coverage.s           79       46      21        8  1.717
+
+The sample1 and sample2 figures match the lab-sheet reference table.
+The ZIP's sample3_hazards.s has 11 dynamic instructions, while the lab-sheet
+reference row specifies 18. The PDF references an Appendix A variant, but
+page 6 of the uploaded PDF is blank and that variant is not in the ZIP.
+Therefore the sample3 reference row (44 cycles, 18 retired, 19 stalls,
+3 flushes) cannot be checked against the provided source materials.
+
+Valgrind was not run in this environment. Run `make memcheck PROG=tests/sample1_sum_loop.s`
+locally if Valgrind is installed.

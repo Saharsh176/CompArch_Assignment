@@ -1,219 +1,159 @@
-# RV32I Base Simulator
+# RV32I Simulator — Lab Sheet 2: Five-Stage Pipeline
 
-A single-cycle RV32I RISC-V simulator, assembler, and CLI debugger written in
-portable C11, designed as the starting point for a semester of computer
-architecture labs (pipelining, hazard detection, branch prediction, the M/F
-extensions, and a custom-extension capstone).
+This project contains the original single-cycle RV32I simulator and a five-stage
+pipelined implementation for the W7 RISC-V Pipeline Lab Sheet.
 
-Nothing in this handout needs to be modified by students. Every lab extends
-the system by **adding new files** that plug into the interfaces described
-below.
+## Architecture
 
-## Why it's built this way
+The original single-cycle execution path in `core/` remains available as the
+reference implementation. The pipeline is implemented in `pipeline/` and uses
+four latches:
 
-The whole codebase hinges on one idea: instructions are not hardcoded into
-the simulator. They're entries in a shared **ISA registry**
-(`core/isa_registry.h`) — a table of `{mnemonic, opcode, funct3, funct7,
-format, execute-function}` structs. The decoder looks instructions up in
-this table by their bit pattern; the assembler looks the same table up by
-mnemonic. Because both share one source of truth, adding an instruction
-(e.g. `MUL` in the M-extension lab) means writing one new file that calls
-`register_instruction(...)` — the core simulator, decoder, and assembler
-never need to change.
+- `IFID`: fetched instruction, PC, validity and fetch-fault state.
+- `IDEX`: decoded instruction, handler, control signals and captured operands.
+- `EXMEM`: ALU result, store value and memory/fault information.
+- `MEMWB`: write-back value and control information.
 
-This is also how "detect an instruction not in the library" works for free:
-if the decoder can't find a matching entry, it reports `ILLEGAL_INSTRUCTION`
-with the offending opcode and PC.
+`pipeline_cycle()` snapshots the old pipeline state into `nx`, has every stage
+read the old latches and write the next latches, then commits the state once at
+the end of the cycle. Stages are WB, MEM, EX, ID and IF. Control signals are
+generated in ID. The hazard unit uses the lab's conservative three-latch
+interlock (ID/EX, EX/MEM and MEM/WB); there is no forwarding. Branches and jumps
+are resolved in EX and redirect the fetch PC while flushing younger work.
+Faults are carried to WB, where they become visible as CPU status values.
 
-## Directory structure
+## Build
 
-```
-riscv_sim_base/
-├── core/                   # engine internals — do not modify in labs
-│   ├── cpu_state.h/.c      # register file, PC, CPUStatus (RUNNING/HALTED/...)
-│   ├── memory.h/.c         # flat byte-addressable memory, little-endian load/store
-│   ├── isa_registry.h/.c   # the instruction dispatch table (the plugin mechanism)
-│   ├── decoder.h/.c        # raw 32-bit word -> DecodedInstr, via the registry
-│   └── executor.h/.c       # single-cycle fetch/decode/execute loop
-│
-├── isa/
-│   └── rv32i_base.h/.c     # base RV32I instructions, registered at startup
-│                           # (Lab 4 adds isa/rv32m.c, Lab 5 isa/rv32f.c, etc.)
-│
-├── assembler/
-│   └── assembler.h/.c      # two-pass assembler; shares core/isa_registry.h
-│                           # with the simulator, so new instructions are
-│                           # automatically assemblable once registered
-│
-├── ui/
-│   └── cli_display.h/.c    # register/memory/status display + step-debugger REPL
-│
-├── main.c                  # wiring: registers the ISA, assembles, runs
-├── Makefile
-├── tests/                  # example programs (also used by `make test`)
-│   ├── sample1_sum_loop.s
-│   └── sample2_mem_and_branches.s
-└── README.md
-```
+Requires GCC (C11) and GNU Make. From the project root:
 
-### Where later labs' files go
-
-The base system doesn't include a pipeline yet (Lab 1 builds it), so there's
-no `pipeline/` directory in this handout. When it's introduced, the expected
-shape is:
-
-```
-pipeline/
-├── pipeline_state.h/.c         # IF/ID, ID/EX, EX/MEM, MEM/WB latches (Lab 1)
-├── hazard_interface.h          # HazardDetector function-pointer contract
-├── branch_predictor_interface.h# BranchPredictor function-pointer contract
-├── hazard_naive.c              # default: always-stall (shipped with Lab 1)
-├── hazard_forwarding.c         # Lab 2 deliverable
-└── branch_predictor_*.c        # Lab 3 deliverable(s)
-```
-and the M/F/custom extensions each add one file under `isa/`:
-```
-isa/rv32m.c            # Lab 4: MUL/DIV family + overflow handling
-isa/rv32f.c             # Lab 5: single-precision floating point
-isa/custom_ext.c        # Lab 6: student-designed instruction(s)
-```
-Each of those is registered with one extra line in `main.c`
-(`register_rv32m();`, etc.) — nothing else changes.
-
-## Building
-
-Requires `gcc` (or any C11 compiler) and `make`. No external dependencies.
-
-```bash
-cd riscv_sim_base
+```sh
+make clean
 make
 ```
 
-This produces a `rvsim` binary in the project root. `make clean` removes
-build artifacts.
+The build uses `-Wall -Wextra -Wpedantic` and should complete without warnings.
 
-## Running
+## Run
 
-```bash
-./rvsim <program.s>              # interactive step-debugger (default)
-./rvsim <program.s> --batch      # run to completion, dump final state (for grading scripts)
-./rvsim <program.s> --batch --max-cycles 500000
-./rvsim <program.s> --mem-size 2097152   # override the default 1 MB memory
-```
-
-Try it on the provided sample programs:
-
-```bash
+```sh
+# Original single-cycle reference engine
 ./rvsim tests/sample1_sum_loop.s --batch
-./rvsim tests/sample2_mem_and_branches.s --batch
+
+# Five-stage pipeline
+./rvsim tests/sample1_sum_loop.s --pipeline
+
+# Optional cycle and memory limits
+./rvsim tests/sample1_sum_loop.s --pipeline --max-cycles 100000
+./rvsim tests/sample9_fetch_fault.s --pipeline --mem-size 4
 ```
 
-or run both as a quick smoke test:
+Both modes print the architectural register file and CPU status. Pipeline mode
+also prints cycles, retired instructions, stalls, flushes and CPI.
+
+## Tests
+
+```sh
+make test-single     # all normal/fault single-cycle programs
+make test-pipeline   # all normal/fault pipeline programs, plus fetch-fault test
+make verify          # compare x0..x31 between both engines and check cycle identity
+make test            # run all of the above
+```
+
+The verification target excludes PC and cycle count from register comparison:
+the pipeline fetch PC legitimately runs ahead. For normal terminating programs,
+it also checks the lab's accounting identity:
+
+```text
+cycles = retired + stalls + flushes + 4
+```
+
+Test programs:
+
+- `sample1_sum_loop.s`: loop, arithmetic, branch, jump, ECALL; expected print is 55.
+- `sample2_mem_and_branches.s`: byte store, signed/unsigned byte loads and branch.
+- `sample3_hazards.s`: load-use dependency and jump/branch behaviour.
+- `sample5_addi.s`: independent ADDI sequence.
+- `sample6_rv32i_coverage.s`: directed arithmetic, shift, U-type, load/store, branch, JAL and JALR coverage.
+- `sample7_illegal_fault.s`: illegal-instruction fault propagation.
+- `sample8_memory_fault.s`: data-memory fault propagation.
+- `sample9_fetch_fault.s`: instruction-fetch fault propagation (run with `--mem-size 4`).
+
+## Reference figures and sample-3 note
+
+With the conservative three-latch interlock and EX-stage branch resolution,
+`sample1_sum_loop.s` produces 108 cycles, 53 retired instructions, 40 stalls,
+11 flushes and CPI 2.038. `sample2_mem_and_branches.s` produces 26 cycles,
+13 retired instructions, 8 stalls, 1 flush and CPI 2.000. These match the
+lab-sheet reference table.
+
+The ZIP's `sample3_hazards.s` executes 11 dynamic instructions, not the 18
+listed for sample 3 in the lab-sheet reference table. The uploaded PDF refers
+to an Appendix A version of that test, but the supplied PDF page 6 is blank
+and the ZIP does not contain that 18-instruction version. Therefore its exact
+19-stall/3-flush reference row cannot be verified from the supplied materials.
+The existing sample is retained rather than inventing an alleged Appendix A
+program. Its architectural registers are still compared against the reference
+engine, and the cycle-accounting identity is checked.
+
+## Scope
+
+The implementation supports the RV32I instruction subset listed in the lab
+sheet: R-type arithmetic/logical/shifts, I-type arithmetic/logical/shifts,
+LUI/AUIPC, byte/halfword/word loads and stores, all six conditional branches,
+JAL, JALR and ECALL. It does not implement forwarding, branch prediction or
+extensions outside RV32I; these are not required by this lab sheet.
+
+## Lab Sheet 3: data hazards and forwarding
+
+The original Lab 2 stalling pipeline remains available:
 
 ```bash
+./rvsim tests/sample1_sum_loop.s --pipeline
+```
+
+The Lab 3 forwarding pipeline is available separately:
+
+```bash
+./rvsim tests/sample1_sum_loop.s --pipeline-forward
+```
+
+Run the worked five-instruction comparison and the automated checks with:
+
+```bash
+./rvsim tests/micro.s --pipeline
+./rvsim tests/micro.s --pipeline-forward
 make test
 ```
 
-### Interactive mode
+`--pipeline` retains the Lab 2 three-latch stalling policy. `--pipeline-forward` forwards from EX/MEM and MEM/WB and inserts one stall for a detected load-use dependency. See `LAB3_CHANGES.md` for implementation details and reference results. The Lab Sheet 3 PDF supplied with this project references an Appendix A `sample4_data_hazards.s` listing that is not present in that PDF; its exact reference program must be supplied before its table row can be reproduced.
 
-```
-$ ./rvsim tests/sample1_sum_loop.s
-RISC-V single-cycle simulator -- interactive mode ('help' for commands)
-status = RUNNING   cycles = 0
-(sim) step 5
-status = RUNNING   cycles = 5
-(sim) regs
----------------------------- registers ----------------------------
-...
-(sim) mem 0x38 16
------------------------- memory 0x00000038 --------------------------
-...
-(sim) break 0x34
-breakpoint set at 0x00000034
-(sim) run
-hit breakpoint at 0x00000034
-(sim) quit
-```
 
-Commands: `step [n]`, `run`, `regs`, `mem <addr> <len>`, `break <addr>`,
-`clearbreak <addr>`, `status`, `help`, `quit`/`exit`.
+## Lab Sheet 3: Data Hazards and Forwarding
 
-## Assembly language supported
-
-**Base RV32I:** `add sub sll slt sltu xor srl sra or and` `addi slti sltiu
-xori ori andi slli srli srai` `lb lh lw lbu lhu` `sb sh sw` `beq bne blt bge
-bltu bgeu` `jal jalr lui auipc` `ecall`
-
-**Pseudo-instructions:** `nop`, `ret`, `j label`, `mv rd, rs`, `li rd, imm`
-(always expands to `lui`+`addi`, i.e. always 8 bytes, even for small
-constants — keeps the assembler's address bookkeeping simple; `li` also
-accepts a label, which loads that label's absolute address).
-
-**Directives:** `.text`, `.data`, `.globl name` (section/visibility markers
-— accepted but not enforced; there is a single flat address space), `.word
-v1[, v2...]`, `.half v1[, v2...]`, `.byte v1[, v2...]` (each operand may be
-a numeric literal or a label), `.align n` (pads the current address up to
-the next multiple of `n`).
-
-**Registers:** both `x0`–`x31` and ABI names (`zero ra sp gp tp t0-t6 s0-s11
-a0-a7`, plus `fp` as an alias for `s0`).
-
-**Syscall convention (`ecall`)**, deliberately minimal — extend freely:
-- `a7 = 1`: print the signed integer in `a0` to stdout
-- `a7 = 10`: exit (halts the machine with status `ECALL_EXIT`)
-- anything else: ignored, with a warning printed to stderr
-
-**Program entry point:** the assembler places code starting at address 0
-and starts execution at the `main:` label if one exists, otherwise address
-0.
-
-## Error handling conventions (for anyone extending this code)
-
-- No exceptions in C: every fallible function returns a status enum
-  (`MemStatus`, `DecodeStatus`, `AsmStatus`, `CPUStatus`) instead. Check
-  return values; don't call `exit()` from `core/`, `isa/`, or `assembler/` —
-  only `main.c` and the CLI decide to terminate.
-- Unknown instructions are a normal, expected outcome (not a crash): decode
-  failure sets `CPUStatus = CPU_ILLEGAL_INSTRUCTION` with the offending
-  opcode and PC recorded for diagnostics.
-- Out-of-bounds memory accesses return `MEM_ERR_OUT_OF_BOUNDS` rather than
-  segfaulting; the executor turns that into `CPU_MEM_FAULT`.
-- Assembler errors (`AsmError`) always carry a source line number — keep
-  this up whenever you add new directives or pseudo-instructions.
-
-## A note on `valgrind`
-
-If your course requires memcheck-clean submissions from students (recommended
-starting with the pipelining lab, where manual memory management gets more
-involved), a target is provided:
+Build and run all tests:
 
 ```bash
-make memcheck PROG=tests/sample1_sum_loop.s
+make clean
+make test
 ```
 
-This requires `valgrind` to be installed locally (not available in every
-sandboxed environment, including the one this code was authored in — it
-wasn't possible to verify this target here, so please run it once locally
-before relying on it for grading).
+Run the Appendix A hazard program in both policies:
 
-## Extending the ISA registry (what a lab actually looks like)
-
-Adding an instruction is: write an `execute` function with the signature
-`void fn(CPUState *cpu, Memory *mem, DecodedInstr *instr)`, then register it:
-
-```c
-static void exec_mul(CPUState *c, Memory *m, DecodedInstr *i) { (void)m;
-    int32_t a = (int32_t)cpu_read_reg(c, i->rs1);
-    int32_t b = (int32_t)cpu_read_reg(c, i->rs2);
-    cpu_write_reg(c, i->rd, (uint32_t)(a * b));
-}
-
-void register_rv32m(void) {
-    /* opcode 0x33, funct3 0x0, funct7 0x01 is MUL's real RV32M encoding */
-    register_instruction((InstructionHandler){"mul", 0x33, 0x0, 0x01, FMT_R, exec_mul});
-}
+```bash
+./rvsim tests/sample4_data_hazards.s --pipeline
+./rvsim tests/sample4_data_hazards.s --pipeline-forward
 ```
 
-Then in `main.c`, alongside `register_rv32i_base();`, add `register_rv32m();`.
-The assembler picks up the new mnemonic automatically — no assembler changes
-required.
+Run the four targeted load-use cases from Section 7:
+
+```bash
+./rvsim tests/load_use_cases.s --pipeline-forward
+```
+
+Show the cycle-by-cycle trace for the worked example in Section 4:
+
+```bash
+make trace
+```
+
+`make test` includes register-file equivalence checks, fault checks, cycle accounting, and the reference-statistics assertions from Section 9. See `LAB3_CHANGES.md` and `TEST_RESULTS_LAB3.txt` for implementation details and the PDF's inconsistent Appendix A aggregate figures.

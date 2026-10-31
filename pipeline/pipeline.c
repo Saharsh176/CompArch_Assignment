@@ -1,114 +1,116 @@
 #include "pipeline_state.h"
 #include "control.h"
+#include "hazard.h"
 #include "memory.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-void pipeline_init(Pipeline *p) {
-    memset(p, 0, sizeof(Pipeline));
+void pipeline_init(Pipeline *p, int forwarding) {
+    memset(p, 0, sizeof(*p));
+    p->forwarding = forwarding;
 }
 
-static uint32_t alu(const DecodedInstr *i, const InstructionHandler *handler, uint32_t pc, uint32_t a, uint32_t b) {
-    uint32_t funct3 = i->funct3;
-    uint32_t funct7 = i->funct7;
-    InstrFormat fmt = handler ? handler->format : FMT_R;
+static uint32_t alu(const DecodedInstr *i, const InstructionHandler *h,
+                    uint32_t pc, uint32_t a, uint32_t b) {
+    const uint32_t f3 = i->funct3;
+    const uint32_t f7 = i->funct7;
+    const InstrFormat fmt = h->format;
+    const uint32_t shamt = ((fmt == FMT_I_SHAMT) ? (uint32_t)i->imm : b) & 0x1fu;
 
-    (void)pc;
-
-    if (fmt == FMT_U) {
-        return i->imm;
-    }
-    if (i->opcode == 0x17) { /* auipc */
-        return pc + i->imm;
-    }
-    if (fmt == FMT_I_LOAD || fmt == FMT_S) {
-        return a + i->imm;
-    }
+    if (i->opcode == 0x17u) return pc + (uint32_t)i->imm; /* auipc */
+    if (fmt == FMT_U) return (uint32_t)i->imm;       /* lui */
+    if (fmt == FMT_I_LOAD || fmt == FMT_S)
+        return a + (uint32_t)i->imm;                 /* effective address */
 
     if (fmt == FMT_R) {
-        if (funct3 == 0) return (funct7 == 0x20) ? (a - b) : (a + b);
-        if (funct3 == 1) return a << (b & 0x1F);
-        if (funct3 == 2) return ((int32_t)a < (int32_t)b) ? 1 : 0;
-        if (funct3 == 3) return (a < b) ? 1 : 0;
-        if (funct3 == 4) return a ^ b;
-        if (funct3 == 5) return (funct7 == 0x20) ? ((int32_t)a >> (b & 0x1F)) : (a >> (b & 0x1F));
-        if (funct3 == 6) return a | b;
-        if (funct3 == 7) return a & b;
-    } else { /* I-type arithmetic / shift */
-        uint32_t shamt = i->imm & 0x1F;
-        if (funct3 == 0) return a + i->imm;
-        if (funct3 == 1) return a << shamt;
-        if (funct3 == 2) return ((int32_t)a < (int32_t)i->imm) ? 1 : 0;
-        if (funct3 == 3) return (a < (uint32_t)i->imm) ? 1 : 0;
-        if (funct3 == 4) return a ^ i->imm;
-        if (funct3 == 5) return (funct7 == 0x20) ? ((int32_t)a >> shamt) : (a >> shamt);
-        if (funct3 == 6) return a | i->imm;
-        if (funct3 == 7) return a & i->imm;
+        switch (f3) {
+            case 0: return f7 == 0x20u ? a - b : a + b;
+            case 1: return a << shamt;
+            case 2: return (int32_t)a < (int32_t)b;
+            case 3: return a < b;
+            case 4: return a ^ b;
+            case 5: return f7 == 0x20u ? (uint32_t)((int32_t)a >> shamt) : a >> shamt;
+            case 6: return a | b;
+            case 7: return a & b;
+            default: return 0;
+        }
     }
-    return 0;
+
+    /* I-type arithmetic and shifts. The decoder has already sign-extended imm. */
+    switch (f3) {
+        case 0: return a + (uint32_t)i->imm;          /* addi */
+        case 1: return a << shamt;                   /* slli */
+        case 2: return (int32_t)a < i->imm;          /* slti */
+        case 3: return a < (uint32_t)i->imm;         /* sltiu */
+        case 4: return a ^ (uint32_t)i->imm;         /* xori */
+        case 5: return f7 == 0x20u ? (uint32_t)((int32_t)a >> shamt) : a >> shamt;
+        case 6: return a | (uint32_t)i->imm;         /* ori */
+        case 7: return a & (uint32_t)i->imm;         /* andi */
+        default: return 0;
+    }
+}
+
+static void raise_pipeline_fault(CPUState *cpu, int fault, uint32_t addr) {
+    cpu->status = (fault == PF_ILLEGAL) ? CPU_ILLEGAL_INSTRUCTION : CPU_MEM_FAULT;
+    cpu->fault_addr = addr;
+    if (fault == PF_ILLEGAL) {
+        snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
+                 "unknown instruction at pc=0x%08x", addr);
+    } else if (fault == PF_FETCH) {
+        snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
+                 "instruction fetch out of bounds at pc=0x%08x", addr);
+    } else {
+        snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
+                 "data memory access out of bounds at address 0x%08x", addr);
+    }
 }
 
 CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
-    if (cpu->status != CPU_RUNNING && 
-        !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid) {
+    if (cpu->status != CPU_RUNNING &&
+        !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid)
         return cpu->status;
-    }
 
+    /* All stages read p (old latches) and write nx (next latches). */
     Pipeline nx = *p;
     int stall = 0;
-    int do_redirect = 0;
+    int redirect = 0;
+    uint32_t redirect_pc = 0;
+    nx.cycles++;
+    nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
 
-    nx.cycles++; /* Real cycle increment */
-
-    nx.mem_wb.valid = 0;
-    nx.ex_mem.valid = 0;
-    nx.id_ex.valid = 0;
-    nx.if_id.valid = 0;
-
-    /* =========================================================================
-     * 1. WRITE BACK (WB)
-     * ========================================================================= */
+    /* WB: faults become architecturally visible only here. */
     if (p->mem_wb.valid) {
         if (p->mem_wb.fault != PF_NONE) {
-            cpu->status = (p->mem_wb.fault == PF_MEM) ? CPU_MEM_FAULT : CPU_ILLEGAL_INSTRUCTION;
-            cpu->fault_addr = p->mem_wb.fault_addr;
-            snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
-                     "fault code %d at address 0x%08x in WB", p->mem_wb.fault, p->mem_wb.fault_addr);
+            raise_pipeline_fault(cpu, p->mem_wb.fault,
+                                 p->mem_wb.fault_addr);
+            /* Kill younger work and commit this final clock tick. */
+            nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
+            *p = nx;
             return cpu->status;
         }
 
-        if (p->mem_wb.ctrl.reg_write && p->mem_wb.instr.rd != 0) {
-            uint32_t val = 0;
-            if (p->mem_wb.ctrl.wb_src == WB_ALU) {
-                val = p->mem_wb.alu_result;
-            } else if (p->mem_wb.ctrl.wb_src == WB_MEM) {
-                val = p->mem_wb.wb_val;
-            } else if (p->mem_wb.ctrl.wb_src == WB_PC4) {
-                val = p->mem_wb.pc + 4;
-            }
-            cpu_write_reg(cpu, p->mem_wb.instr.rd, val);
+        if (p->mem_wb.ctrl.reg_write) {
+            uint32_t value = p->mem_wb.wb_val;
+            if (p->mem_wb.ctrl.wb_src == WB_PC4) value = p->mem_wb.pc + 4u;
+            cpu_write_reg(cpu, (int)p->mem_wb.instr.rd, value);
         }
 
-        nx.retired++;
-
         if (p->mem_wb.ctrl.is_system && p->mem_wb.handler && p->mem_wb.handler->execute) {
-            uint32_t old_pc = cpu->pc;
+            uint32_t saved_pc = cpu->pc;
             cpu->pc = p->mem_wb.pc;
             p->mem_wb.handler->execute(cpu, mem, &p->mem_wb.instr);
-            cpu->pc = old_pc;
-
-            if (cpu->status != CPU_RUNNING) {
-                nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
-                *p = nx;
-                return cpu->status;
-            }
+            cpu->pc = saved_pc;
+        }
+        nx.retired++;
+        if (cpu->status != CPU_RUNNING) {
+            /* An ecall exit retires in order; younger prefetched instructions die. */
+            nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
+            *p = nx;
+            return cpu->status;
         }
     }
 
-    /* =========================================================================
-     * 2. MEMORY (MEM)
-     * ========================================================================= */
+    /* MEM: perform loads/stores and carry faults to WB. */
     if (p->ex_mem.valid) {
         nx.mem_wb.valid = 1;
         nx.mem_wb.pc = p->ex_mem.pc;
@@ -117,60 +119,39 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         nx.mem_wb.handler = p->ex_mem.handler;
         nx.mem_wb.ctrl = p->ex_mem.ctrl;
         nx.mem_wb.fault_addr = p->ex_mem.fault_addr;
-        nx.mem_wb.alu_result = p->ex_mem.alu_result;
         nx.mem_wb.wb_val = p->ex_mem.alu_result;
 
-        uint32_t funct3 = p->ex_mem.instr.funct3;
-
-        if (p->ex_mem.ctrl.mem_read) {
+        if (p->ex_mem.fault == PF_NONE && p->ex_mem.ctrl.mem_read) {
             uint32_t data = 0;
-            int mres = MEM_OK;
-            if (funct3 == 0) {
-                uint8_t b;
-                mres = memory_read_byte(mem, p->ex_mem.alu_result, &b);
-                data = (int32_t)(int8_t)b;
-            } else if (funct3 == 1) {
-                uint16_t h;
-                mres = memory_read_half(mem, p->ex_mem.alu_result, &h);
-                data = (int32_t)(int16_t)h;
-            } else if (funct3 == 2) {
-                mres = memory_read_word(mem, p->ex_mem.alu_result, &data);
-            } else if (funct3 == 4) {
-                uint8_t b;
-                mres = memory_read_byte(mem, p->ex_mem.alu_result, &b);
-                data = (uint32_t)b;
-            } else if (funct3 == 5) {
-                uint16_t h;
-                mres = memory_read_half(mem, p->ex_mem.alu_result, &h);
-                data = (uint32_t)h;
+            MemStatus ms = MEM_OK;
+            switch (p->ex_mem.instr.funct3) {
+                case 0: { uint8_t v = 0; ms = memory_read_byte(mem, p->ex_mem.alu_result, &v); data = (uint32_t)(int32_t)(int8_t)v; break; }
+                case 1: { uint16_t v = 0; ms = memory_read_half(mem, p->ex_mem.alu_result, &v); data = (uint32_t)(int32_t)(int16_t)v; break; }
+                case 2: ms = memory_read_word(mem, p->ex_mem.alu_result, &data); break;
+                case 4: { uint8_t v = 0; ms = memory_read_byte(mem, p->ex_mem.alu_result, &v); data = v; break; }
+                case 5: { uint16_t v = 0; ms = memory_read_half(mem, p->ex_mem.alu_result, &v); data = v; break; }
+                default: ms = MEM_ERR_OUT_OF_BOUNDS; break;
             }
-
-            if (mres != MEM_OK) {
+            if (ms != MEM_OK) {
                 nx.mem_wb.fault = PF_MEM;
                 nx.mem_wb.fault_addr = p->ex_mem.alu_result;
-            } else {
-                nx.mem_wb.wb_val = data;
-            }
-        } else if (p->ex_mem.ctrl.mem_write) {
-            int mres = MEM_OK;
-            if (funct3 == 0) {
-                mres = memory_write_byte(mem, p->ex_mem.alu_result, (uint8_t)p->ex_mem.store_val);
-            } else if (funct3 == 1) {
-                mres = memory_write_half(mem, p->ex_mem.alu_result, (uint16_t)p->ex_mem.store_val);
-            } else {
-                mres = memory_write_word(mem, p->ex_mem.alu_result, p->ex_mem.store_val);
-            }
-
-            if (mres != MEM_OK) {
+            } else nx.mem_wb.wb_val = data;
+        } else if (p->ex_mem.fault == PF_NONE && p->ex_mem.ctrl.mem_write) {
+            MemStatus ms;
+            if (p->ex_mem.instr.funct3 == 0)
+                ms = memory_write_byte(mem, p->ex_mem.alu_result, (uint8_t)p->ex_mem.store_val);
+            else if (p->ex_mem.instr.funct3 == 1)
+                ms = memory_write_half(mem, p->ex_mem.alu_result, (uint16_t)p->ex_mem.store_val);
+            else
+                ms = memory_write_word(mem, p->ex_mem.alu_result, p->ex_mem.store_val);
+            if (ms != MEM_OK) {
                 nx.mem_wb.fault = PF_MEM;
                 nx.mem_wb.fault_addr = p->ex_mem.alu_result;
             }
         }
     }
 
-    /* =========================================================================
-     * 3. EXECUTE (EX)
-     * ========================================================================= */
+    /* EX: ALU, branch comparison, and redirect generation. */
     if (p->id_ex.valid) {
         nx.ex_mem.valid = 1;
         nx.ex_mem.pc = p->id_ex.pc;
@@ -179,125 +160,126 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         nx.ex_mem.handler = p->id_ex.handler;
         nx.ex_mem.ctrl = p->id_ex.ctrl;
         nx.ex_mem.store_val = p->id_ex.rs2_val;
+        nx.ex_mem.fault_addr = p->id_ex.pc;
 
-        uint32_t op1 = p->id_ex.rs1_val;
-        uint32_t op2 = p->id_ex.rs2_val;
-        uint32_t funct3 = p->id_ex.instr.funct3;
-        InstrFormat fmt = p->id_ex.handler ? p->id_ex.handler->format : FMT_R;
-
-        if (p->id_ex.ctrl.is_branch) {
-            int taken = 0;
-            if (funct3 == 0) taken = (op1 == op2);
-            else if (funct3 == 1) taken = (op1 != op2);
-            else if (funct3 == 4) taken = ((int32_t)op1 < (int32_t)op2);
-            else if (funct3 == 5) taken = ((int32_t)op1 >= (int32_t)op2);
-            else if (funct3 == 6) taken = (op1 < op2);
-            else if (funct3 == 7) taken = (op1 >= op2);
-
-            if (taken) {
-                uint32_t redirect_pc = p->id_ex.pc + p->id_ex.instr.imm;
-                do_redirect = 1;
-                nx.flushes++;
-                nx.id_ex.valid = 0;
-                nx.if_id.valid = 0;
-                cpu->pc = redirect_pc;
-            }
-            nx.ex_mem.alu_result = 0;
-        } else if (p->id_ex.ctrl.is_jump) {
-            uint32_t redirect_pc = 0;
-            if (fmt == FMT_J) {
-                redirect_pc = p->id_ex.pc + p->id_ex.instr.imm;
+        if (p->id_ex.fault == PF_NONE) {
+            Operands operands = forward_operands(p, &p->id_ex);
+            uint32_t a = operands.a, b = operands.b;
+            nx.fwd_ex += (uint64_t)operands.fwd_ex;
+            nx.fwd_mem += (uint64_t)operands.fwd_mem;
+            nx.ex_mem.store_val = b;
+            uint32_t f3 = p->id_ex.instr.funct3;
+            InstrFormat fmt = p->id_ex.handler->format;
+            if (p->id_ex.ctrl.is_branch) {
+                int taken = 0;
+                switch (f3) {
+                    case 0: taken = a == b; break;
+                    case 1: taken = a != b; break;
+                    case 4: taken = (int32_t)a < (int32_t)b; break;
+                    case 5: taken = (int32_t)a >= (int32_t)b; break;
+                    case 6: taken = a < b; break;
+                    case 7: taken = a >= b; break;
+                }
+                if (taken) { redirect = 1; redirect_pc = p->id_ex.pc + (uint32_t)p->id_ex.instr.imm; }
+            } else if (p->id_ex.ctrl.is_jump) {
+                redirect = 1;
+                redirect_pc = (fmt == FMT_J) ? p->id_ex.pc + (uint32_t)p->id_ex.instr.imm
+                                             : (a + (uint32_t)p->id_ex.instr.imm) & ~1u;
+                nx.ex_mem.alu_result = p->id_ex.pc + 4u;
             } else {
-                redirect_pc = (op1 + p->id_ex.instr.imm) & ~1u;
+                nx.ex_mem.alu_result = alu(&p->id_ex.instr, p->id_ex.handler,
+                                           p->id_ex.pc, a, b);
             }
-            do_redirect = 1;
-            nx.flushes++;
-            nx.id_ex.valid = 0;
-            nx.if_id.valid = 0;
-            cpu->pc = redirect_pc;
-            nx.ex_mem.alu_result = p->id_ex.pc + 4;
-        } else {
-            nx.ex_mem.alu_result = alu(&p->id_ex.instr, p->id_ex.handler, p->id_ex.pc, op1, op2);
         }
     }
 
-    /* =========================================================================
-     * 4. DECODE & HAZARD DETECTION (ID)
-     * ========================================================================= */
-    /* Skip hazard check when EX is redirecting */
-    if (p->if_id.valid && !do_redirect) {
-        DecodedInstr ni;
-        const InstructionHandler *nh;
-        if (decode_instruction(p->if_id.raw, &ni, &nh) == DECODE_OK) {
-            ControlSignals nc = control_decode(&ni, nh);
-
-            #define HAZ(L) ((L).valid && !(L).fault && (L).ctrl.reg_write && (L).instr.rd != 0 && \
-                ((nc.uses_rs1 && ni.rs1 == (L).instr.rd) || (nc.uses_rs2 && ni.rs2 == (L).instr.rd)))
-
-            if (HAZ(p->id_ex) || HAZ(p->ex_mem)) {
+    /* ID: decode and ask the standalone hazard unit whether to interlock. */
+    HazardVerdict hz = {0, 0};
+    if (p->if_id.valid && !redirect && p->if_id.fault == PF_NONE) {
+        DecodedInstr candidate;
+        const InstructionHandler *candidate_handler = NULL;
+        if (decode_instruction(p->if_id.raw, &candidate, &candidate_handler) == DECODE_OK) {
+            ControlSignals candidate_ctrl = control_decode(&candidate, candidate_handler);
+            hz = hazard_check(p, &candidate, &candidate_ctrl);
+            if (hz.stall) {
                 stall = 1;
                 nx.stalls++;
+                if (hz.load_use) nx.load_use_stalls++;
             }
-            #undef HAZ
         }
     }
 
     if (stall) {
-        nx.if_id = p->if_id;
-        nx.id_ex.valid = 0;
-    } else {
-        if (do_redirect) {
-            nx.id_ex.valid = 0;
-        } else if (p->if_id.valid) {
-            DecodedInstr instr;
-            const InstructionHandler *handler;
-            DecodeStatus dstat = decode_instruction(p->if_id.raw, &instr, &handler);
-
-            nx.id_ex.valid = 1;
-            nx.id_ex.pc = p->if_id.pc;
-            nx.id_ex.fault = p->if_id.fault;
-
-            if (dstat != DECODE_OK) {
+        nx.if_id = p->if_id;       /* freeze IF/ID */
+        nx.id_ex.valid = 0;        /* inject bubble into ID/EX */
+    } else if (p->if_id.valid && !redirect) {
+        nx.id_ex.valid = 1;
+        nx.id_ex.pc = p->if_id.pc;
+        nx.id_ex.fault = p->if_id.fault;
+        if (p->if_id.fault == PF_FETCH) {
+            nx.id_ex.fault = PF_FETCH;
+            nx.id_ex.handler = NULL;
+            nx.id_ex.ctrl = (ControlSignals){0};
+        } else {
+            DecodeStatus ds = decode_instruction(p->if_id.raw, &nx.id_ex.instr, &nx.id_ex.handler);
+            if (ds != DECODE_OK) {
                 nx.id_ex.fault = PF_ILLEGAL;
-                nx.id_ex.ctrl = (ControlSignals){0};
                 nx.id_ex.handler = NULL;
+                nx.id_ex.ctrl = (ControlSignals){0};
             } else {
-                nx.id_ex.instr = instr;
-                nx.id_ex.handler = handler;
-                nx.id_ex.ctrl = control_decode(&instr, handler);
-                nx.id_ex.rs1_val = cpu_read_reg(cpu, instr.rs1);
-                nx.id_ex.rs2_val = cpu_read_reg(cpu, instr.rs2);
+                nx.id_ex.ctrl = control_decode(&nx.id_ex.instr, nx.id_ex.handler);
+                nx.id_ex.rs1_val = cpu_read_reg(cpu, (int)nx.id_ex.instr.rs1);
+                nx.id_ex.rs2_val = cpu_read_reg(cpu, (int)nx.id_ex.instr.rs2);
             }
         }
     }
 
-    /* =========================================================================
-     * 5. FETCH (IF)
-     * ========================================================================= */
+    /* A redirect kills the younger decoded/fetched instruction. Count one
+       lost control-flow cycle, then fetch the target in this same tick. */
+    if (redirect) {
+        nx.flushes++;
+        nx.id_ex.valid = 0;
+        nx.if_id.valid = 0;
+        cpu->pc = redirect_pc;
+    }
+
+    /* IF: freeze on stall; otherwise fetch sequentially or from redirect. */
     if (!stall && cpu->status == CPU_RUNNING) {
         uint32_t fetch_pc = cpu->pc;
-
         uint32_t raw = 0;
-        int mres = memory_read_word(mem, fetch_pc, &raw);
-
+        MemStatus ms = memory_read_word(mem, fetch_pc, &raw);
         nx.if_id.valid = 1;
         nx.if_id.pc = fetch_pc;
         nx.if_id.raw = raw;
-        nx.if_id.fault = (mres != MEM_OK) ? PF_FETCH : PF_NONE;
-
-        cpu->pc = fetch_pc + 4;
+        nx.if_id.fault = (ms == MEM_OK) ? PF_NONE : PF_FETCH;
+        cpu->pc = fetch_pc + 4u;
     }
 
+#ifdef PIPELINE_TRACE
+    fprintf(stderr, "c%-3llu IF=%04x ID=%04x EX=%04x MEM=%04x WB=%04x %s%s\n",
+            (unsigned long long)nx.cycles, nx.if_id.pc, p->if_id.pc,
+            p->id_ex.pc, p->ex_mem.pc, p->mem_wb.pc,
+            stall ? "STALL " : "", redirect ? "FLUSH" : "");
+#endif
     *p = nx;
     return cpu->status;
 }
 
 void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cycles) {
     while (p->cycles < max_cycles) {
-        if (cpu->status != CPU_RUNNING && 
-            !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid) {
+        if (cpu->status != CPU_RUNNING &&
+            !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid)
             break;
-        }
         pipeline_cycle(p, cpu, mem);
+        if (cpu->status != CPU_RUNNING &&
+            !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid)
+            break;
     }
+    printf("pipeline: mode=%s cycles=%llu retired=%llu stalls=%llu flushes=%llu CPI=%.3f fwd_ex=%llu fwd_mem=%llu load_use=%llu\n",
+           p->forwarding ? "forward" : "stall",
+           (unsigned long long)p->cycles, (unsigned long long)p->retired,
+           (unsigned long long)p->stalls, (unsigned long long)p->flushes,
+           p->retired ? (double)p->cycles / (double)p->retired : 0.0,
+           (unsigned long long)p->fwd_ex, (unsigned long long)p->fwd_mem,
+           (unsigned long long)p->load_use_stalls);
 }

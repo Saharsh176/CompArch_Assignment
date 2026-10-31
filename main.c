@@ -17,7 +17,8 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s <program.s> [options]\n"
         "  --batch              run to completion with no interaction (single-cycle), then dump state\n"
-        "  --pipeline           run using the 5-stage pipeline simulator in batch mode\n"
+        "  --pipeline           run using the 5-stage pipeline simulator (stalling policy)\n"
+        "  --pipeline-forward   run using forwarding + load-use detection\n"
         "  --max-cycles N       cycle limit for batch/pipeline mode (default %llu)\n"
         "  --mem-size N         memory size in bytes (default %u)\n",
         prog, (unsigned long long)DEFAULT_MAX_CYCLES, DEFAULT_MEM_SIZE);
@@ -31,7 +32,8 @@ int main(int argc, char **argv) {
 
     const char *program_path = argv[1];
     int batch_mode = 0;
-    int pipeline_mode = 0; /* <-- Added pipeline flag */
+    int pipeline_mode = 0;
+    int forwarding_mode = 0;
     uint64_t max_cycles = DEFAULT_MAX_CYCLES;
     uint32_t mem_size = DEFAULT_MEM_SIZE;
 
@@ -40,7 +42,12 @@ int main(int argc, char **argv) {
             batch_mode = 1;
         } else if (strcmp(argv[i], "--pipeline") == 0) {
             pipeline_mode = 1;
-            batch_mode = 1; /* Pipeline mode runs in batch */
+            forwarding_mode = 0;
+            batch_mode = 1;
+        } else if (strcmp(argv[i], "--pipeline-forward") == 0) {
+            pipeline_mode = 1;
+            forwarding_mode = 1;
+            batch_mode = 1;
         } else if (strcmp(argv[i], "--max-cycles") == 0 && i + 1 < argc) {
             max_cycles = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--mem-size") == 0 && i + 1 < argc) {
@@ -80,8 +87,9 @@ int main(int argc, char **argv) {
     if (pipeline_mode) {
         /* Run 5-stage pipeline simulator */
         Pipeline pipeline;
-        pipeline_init(&pipeline);
-        printf("running with 5-stage pipeline simulator...\n");
+        pipeline_init(&pipeline, forwarding_mode);
+        printf("running with 5-stage pipeline simulator (%s)...\n",
+               forwarding_mode ? "forwarding" : "stalling");
         pipeline_run_batch(&pipeline, &cpu, &mem, max_cycles);
         
         printf("\n--- Pipeline Execution Summary ---\n");
@@ -90,7 +98,14 @@ int main(int argc, char **argv) {
         printf("Stalls         : %llu\n", (unsigned long long)pipeline.stalls);
         printf("Flushes        : %llu\n", (unsigned long long)pipeline.flushes);
         if (pipeline.cycles > 0) {
-            printf("CPI            : %.2f\n", (double)pipeline.cycles / (pipeline.retired > 0 ? pipeline.retired : 1));
+            printf("CPI            : %.3f\n", (double)pipeline.cycles / (pipeline.retired > 0 ? pipeline.retired : 1));
+        }
+        cpu.cycle_count = pipeline.cycles;
+        printf("\n");
+        print_registers(&cpu);
+        print_status(&cpu);
+        if (cpu.status == CPU_RUNNING) {
+            printf("  -> stopped: reached max cycle limit (%llu)\n", (unsigned long long)max_cycles);
         }
     } else if (batch_mode) {
         run_batch(&cpu, &mem, max_cycles);

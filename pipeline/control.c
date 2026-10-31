@@ -2,95 +2,43 @@
 
 ControlSignals control_decode(const DecodedInstr *i, const InstructionHandler *h) {
     ControlSignals ctrl = {0};
-
-    /* Explicitly catch SYSTEM instructions (like ecall, opcode 0x73) */
-    if (i->opcode == 0x73) {
-        ctrl.is_system = 1;
-        ctrl.reg_write = 0;
-        ctrl.wb_src = WB_NONE;
-        ctrl.mem_read = 0;
-        ctrl.mem_write = 0;
-        ctrl.is_branch = 0;
-        ctrl.is_jump = 0;
-        ctrl.uses_rs1 = 0;
-        ctrl.uses_rs2 = 0;
-        return ctrl;
-    }
+    (void)i; /* The registry format is the source of instruction classification. */
 
     switch (h->format) {
         case FMT_R:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_ALU;
-            ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 1;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_ALU;
+            ctrl.uses_rs1 = 1; ctrl.uses_rs2 = 1;
             break;
-
         case FMT_I:
         case FMT_I_SHAMT:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_ALU;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_ALU;
             ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 0;
             break;
-
         case FMT_U:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_ALU;
-            ctrl.uses_rs1 = 0;
-            ctrl.uses_rs2 = 0;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_ALU;
             break;
-
         case FMT_I_LOAD:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_MEM;
-            ctrl.mem_read = 1;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_MEM; ctrl.mem_read = 1;
             ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 0;
             break;
-
         case FMT_S:
-            ctrl.reg_write = 0;
-            ctrl.wb_src = WB_NONE;
-            ctrl.mem_write = 1;
-            ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 1;
+            ctrl.mem_write = 1; ctrl.uses_rs1 = 1; ctrl.uses_rs2 = 1;
             break;
-
         case FMT_B:
-            ctrl.reg_write = 0;
-            ctrl.wb_src = WB_NONE;
-            ctrl.is_branch = 1;
-            ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 1;
+            ctrl.is_branch = 1; ctrl.uses_rs1 = 1; ctrl.uses_rs2 = 1;
             break;
-
         case FMT_J:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_PC4;
-            ctrl.is_jump = 1;
-            ctrl.uses_rs1 = 0;
-            ctrl.uses_rs2 = 0;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_PC4; ctrl.is_jump = 1;
             break;
-
         case FMT_I_JALR:
-            ctrl.reg_write = 1;
-            ctrl.wb_src = WB_PC4;
-            ctrl.is_jump = 1;
+            ctrl.reg_write = 1; ctrl.wb_src = WB_PC4; ctrl.is_jump = 1;
             ctrl.uses_rs1 = 1;
-            ctrl.uses_rs2 = 0;
             break;
-
         case FMT_I_SYS:
-            ctrl.reg_write = 0;
-            ctrl.wb_src = WB_NONE;
             ctrl.is_system = 1;
-            ctrl.uses_rs1 = 0;
-            ctrl.uses_rs2 = 0;
             break;
-
         default:
             break;
     }
-
     return ctrl;
 }
