@@ -1,0 +1,10 @@
+cat > .gitignore <<'EOF'
+*.o
+*.d
+/rvsim
+/rvsim-trace
+ref.txt
+got.txt
+pipe.txt
+EOF
+git status

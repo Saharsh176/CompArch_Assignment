@@ -15,19 +15,26 @@ SRCS := \
     ui/cli_display.c \
     pipeline/control.c \
     pipeline/hazard.c \
+    pipeline/branch_predictor.c \
+    pipeline/bp_static.c \
+    pipeline/bp_dynamic.c \
     pipeline/pipeline.c \
     main.c
 OBJS := $(SRCS:.c=.o)
-TESTS := tests/micro.s tests/forward_priority.s tests/sample1_sum_loop.s tests/sample2_mem_and_branches.s tests/sample3_hazards.s tests/sample4_data_hazards.s tests/load_use_cases.s tests/sample5_addi.s tests/sample6_rv32i_coverage.s tests/sample7_illegal_fault.s tests/sample8_memory_fault.s
+TESTS := tests/micro.s tests/forward_priority.s tests/sample1_sum_loop.s tests/sample2_mem_and_branches.s tests/sample3_hazards.s tests/sample4_data_hazards.s tests/load_use_cases.s tests/sample5_addi.s tests/sample6_rv32i_coverage.s tests/sample7_illegal_fault.s tests/sample8_memory_fault.s tests/t1_counted_loop.s tests/t2_nested_loops.s tests/t3_alternating.s tests/t4_calls.s
 
-.PHONY: all clean run memcheck test test-single test-pipeline verify verify-reference trace
+.PHONY: test-lab4 all clean run memcheck test test-single test-pipeline verify verify-reference trace
 all: $(BIN)
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
+# -MMD/-MP + include: a header edit (e.g. the Pipeline struct) rebuilds every
+# object that includes it, so objects never disagree about struct layout.
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+-include $(OBJS:.o=.d)
 
 run: $(BIN)
 	./$(BIN) $(PROG) --batch
@@ -43,7 +50,7 @@ trace: rvsim-trace
 	./rvsim-trace tests/micro.s --pipeline
 
 test-single: $(BIN)
-	@set -e; for f in $(TESTS); do echo "=== single-cycle: $$f ==="; ./$(BIN) "$$f" --batch >/dev/null; done
+	@set -e; for f in $(TESTS); do echo "=== single-cycle: $$f ==="; ./$(BIN) "$$f" --batch --single-cycle >/dev/null; done
 	@echo "All single-cycle smoke tests passed."
 
 test-pipeline: $(BIN)
@@ -60,7 +67,7 @@ verify: $(BIN)
 	@set -e; tmp=$$(mktemp -d); trap 'rm -rf $$tmp' EXIT; \
 	for f in $(TESTS); do \
 	  name=$$(basename $$f .s); \
-	  ./$(BIN) "$$f" --batch > $$tmp/$$name.single; \
+	  ./$(BIN) "$$f" --batch --single-cycle > $$tmp/$$name.single; \
 	  ./$(BIN) "$$f" --pipeline > $$tmp/$$name.pipe; \
 	  ./$(BIN) "$$f" --pipeline-forward > $$tmp/$$name.forward; \
 	  grep '^x' $$tmp/$$name.single > $$tmp/$$name.single.regs; \
@@ -77,7 +84,7 @@ verify: $(BIN)
 	  fi; \
 	  echo "REGISTER MATCH (single/stall/forward): $$f"; \
 	done; \
-	./$(BIN) tests/sample9_fetch_fault.s --batch --mem-size 4 > $$tmp/fetch.single; \
+	./$(BIN) tests/sample9_fetch_fault.s --batch --single-cycle --mem-size 4 > $$tmp/fetch.single; \
 	./$(BIN) tests/sample9_fetch_fault.s --pipeline --mem-size 4 > $$tmp/fetch.pipe; \
 	grep '^x' $$tmp/fetch.single > $$tmp/fetch.single.regs; \
 	grep '^x' $$tmp/fetch.pipe > $$tmp/fetch.pipe.regs; \
@@ -104,7 +111,13 @@ verify-reference: $(BIN)
 	check tests/sample4_data_hazards.s --pipeline-forward 'pipeline: mode=forward cycles=36 retired=29 stalls=2 flushes=1 CPI=1.241 fwd_ex=9 fwd_mem=7 load_use=2'; \
 	check tests/load_use_cases.s --pipeline-forward 'pipeline: mode=forward cycles=28 retired=19 stalls=4 flushes=1 CPI=1.474 fwd_ex=4 fwd_mem=5 load_use=4'
 
-test: test-single test-pipeline verify verify-reference
+test-lab4: $(BIN)
+	@./check_lab4.sh
+
+test: test-single test-pipeline verify verify-reference test-lab4
 
 clean:
-	rm -f $(OBJS) $(BIN) rvsim-trace
+	rm -f $(OBJS) $(OBJS:.o=.d) $(BIN) rvsim-trace
+
+
+
