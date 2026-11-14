@@ -12,6 +12,9 @@ static const char *abi_names[NUM_REGS] = {
 
 void cpu_reset(CPUState *cpu, uint32_t start_pc) {
     memset(cpu->regs, 0, sizeof(cpu->regs));
+    memset(cpu->fregs, 0, sizeof(cpu->fregs));
+    cpu->fcsr = 0;
+    cpu->fp_used = 0;
     cpu->pc = start_pc;
     cpu->next_pc = start_pc;
     cpu->status = CPU_RUNNING;
@@ -28,6 +31,28 @@ uint32_t cpu_read_reg(const CPUState *cpu, int idx) {
 void cpu_write_reg(CPUState *cpu, int idx, uint32_t value) {
     if (idx == 0) return; /* x0 hardwired to zero, writes silently discarded */
     cpu->regs[idx & 0x1F] = value;
+}
+
+uint32_t cpu_read_freg(const CPUState *cpu, int idx) { return cpu->fregs[idx & 0x1f]; }
+void cpu_write_freg(CPUState *cpu, int idx, uint32_t value) { cpu->fregs[idx & 0x1f] = value; }
+void cpu_raise_fflags(CPUState *cpu, uint32_t flags) { cpu->fcsr |= (flags & 0x1fu); }
+int cpu_frm(const CPUState *cpu) { return (int)((cpu->fcsr >> 5) & 7u); }
+
+static const char *fabi[32] = {
+    "ft0","ft1","ft2","ft3","ft4","ft5","ft6","ft7",
+    "fs0","fs1","fa0","fa1","fa2","fa3","fa4","fa5",
+    "fa6","fa7","fs2","fs3","fs4","fs5","fs6","fs7",
+    "fs8","fs9","fs10","fs11","ft8","ft9","ft10","ft11"
+};
+const char *cpu_freg_abi_name(int idx) { return fabi[idx & 31]; }
+int cpu_freg_index_from_name(const char *name) {
+    if (!name || !*name) return -1;
+    if ((name[0]=='f' || name[0]=='F') && isdigit((unsigned char)name[1])) {
+        char *end; long v=strtol(name+1,&end,10);
+        if (*end=='\0' && v>=0 && v<32) return (int)v;
+    }
+    for (int i=0;i<32;i++) if (!strcmp(name,fabi[i])) return i;
+    return -1;
 }
 
 const char *cpu_reg_abi_name(int idx) {

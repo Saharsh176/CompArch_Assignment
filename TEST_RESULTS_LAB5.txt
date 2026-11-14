@@ -1,0 +1,40 @@
+Extended verification run
+========================
+
+Build:
+  make clean && make
+  Result: PASS, no compiler warnings.
+
+Regression:
+  make test
+  Result: PASS.
+
+Supplied sample_tests.zip and custom cases:
+  make test-extended
+  Result: 55 extended golden/custom checks passed.
+
+Cycle references (Cycles references.docx):
+
+Program       Mode                                      Expected  Actual
+s1_alu        single-cycle                                  41      41
+s2_memory     single-cycle                                  87      87
+s3_control    single-cycle                                 634     634
+p1_broad      Lab 2 raw pipeline                            113     113
+p2_edge       Lab 2 raw pipeline                             57      57
+p3_kernel     Lab 2 raw pipeline                            762     762
+h1_broad      Lab 3 forwarding                              52      52
+h2_edge       Lab 3 forwarding                              40      40
+h3_kernel     Lab 3 forwarding                             461     461
+b1_patterns   Lab 4 default 2-bit predictor                1476    1476
+b2_adversarial Lab 4 default 2-bit predictor               4985    4985
+b3_applied    Lab 4 default 2-bit predictor                3982    3982
+f1_broad      Lab 5 forwarding                               46      46
+f2_special    Lab 5 forwarding                               71      71
+f3_kernel     Lab 5 forwarding                              222     222
+
+The supplied Lab 2–5 golden output files were compared byte-for-byte by
+`tests/run_extended_tests.sh`. Lab 5 comparisons include integer registers,
+FP registers, and fcsr. Custom tests additionally compare single-cycle and
+both pipeline hazard policies for FP bit-manipulation, signed zero, NaNs,
+rounding, fused cancellation, third-source forwarding, load-use, and overwrite
+priority. Invalid dynamic rounding mode was checked in both execution modes.

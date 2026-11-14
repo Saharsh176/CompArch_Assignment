@@ -205,54 +205,54 @@ static void exec_ecall(CPUState *c, Memory *m, DecodedInstr *i) { (void)m; (void
 
 void register_rv32i_base(void) {
     /* R-type */
-    register_instruction((InstructionHandler){"add",  OP_R, 0x0, 0x00, FMT_R, exec_add});
-    register_instruction((InstructionHandler){"sub",  OP_R, 0x0, 0x20, FMT_R, exec_sub});
-    register_instruction((InstructionHandler){"sll",  OP_R, 0x1, 0x00, FMT_R, exec_sll});
-    register_instruction((InstructionHandler){"slt",  OP_R, 0x2, 0x00, FMT_R, exec_slt});
-    register_instruction((InstructionHandler){"sltu", OP_R, 0x3, 0x00, FMT_R, exec_sltu});
-    register_instruction((InstructionHandler){"xor",  OP_R, 0x4, 0x00, FMT_R, exec_xor});
-    register_instruction((InstructionHandler){"srl",  OP_R, 0x5, 0x00, FMT_R, exec_srl});
-    register_instruction((InstructionHandler){"sra",  OP_R, 0x5, 0x20, FMT_R, exec_sra});
-    register_instruction((InstructionHandler){"or",   OP_R, 0x6, 0x00, FMT_R, exec_or});
-    register_instruction((InstructionHandler){"and",  OP_R, 0x7, 0x00, FMT_R, exec_and});
+    register_instruction((InstructionHandler){"add",  OP_R, 0x0, 0x00, FMT_R, exec_add, 0, 0});
+    register_instruction((InstructionHandler){"sub",  OP_R, 0x0, 0x20, FMT_R, exec_sub, 0, 0});
+    register_instruction((InstructionHandler){"sll",  OP_R, 0x1, 0x00, FMT_R, exec_sll, 0, 0});
+    register_instruction((InstructionHandler){"slt",  OP_R, 0x2, 0x00, FMT_R, exec_slt, 0, 0});
+    register_instruction((InstructionHandler){"sltu", OP_R, 0x3, 0x00, FMT_R, exec_sltu, 0, 0});
+    register_instruction((InstructionHandler){"xor",  OP_R, 0x4, 0x00, FMT_R, exec_xor, 0, 0});
+    register_instruction((InstructionHandler){"srl",  OP_R, 0x5, 0x00, FMT_R, exec_srl, 0, 0});
+    register_instruction((InstructionHandler){"sra",  OP_R, 0x5, 0x20, FMT_R, exec_sra, 0, 0});
+    register_instruction((InstructionHandler){"or",   OP_R, 0x6, 0x00, FMT_R, exec_or, 0, 0});
+    register_instruction((InstructionHandler){"and",  OP_R, 0x7, 0x00, FMT_R, exec_and, 0, 0});
 
     /* I-type arithmetic */
-    register_instruction((InstructionHandler){"addi",  OP_IARITH, 0x0, -1,   FMT_I,       exec_addi});
-    register_instruction((InstructionHandler){"slti",  OP_IARITH, 0x2, -1,   FMT_I,       exec_slti});
-    register_instruction((InstructionHandler){"sltiu", OP_IARITH, 0x3, -1,   FMT_I,       exec_sltiu});
-    register_instruction((InstructionHandler){"xori",  OP_IARITH, 0x4, -1,   FMT_I,       exec_xori});
-    register_instruction((InstructionHandler){"ori",   OP_IARITH, 0x6, -1,   FMT_I,       exec_ori});
-    register_instruction((InstructionHandler){"andi",  OP_IARITH, 0x7, -1,   FMT_I,       exec_andi});
-    register_instruction((InstructionHandler){"slli",  OP_IARITH, 0x1, 0x00, FMT_I_SHAMT, exec_slli});
-    register_instruction((InstructionHandler){"srli",  OP_IARITH, 0x5, 0x00, FMT_I_SHAMT, exec_srli});
-    register_instruction((InstructionHandler){"srai",  OP_IARITH, 0x5, 0x20, FMT_I_SHAMT, exec_srai});
+    register_instruction((InstructionHandler){"addi",  OP_IARITH, 0x0, -1,   FMT_I,       exec_addi, 0, 0});
+    register_instruction((InstructionHandler){"slti",  OP_IARITH, 0x2, -1,   FMT_I,       exec_slti, 0, 0});
+    register_instruction((InstructionHandler){"sltiu", OP_IARITH, 0x3, -1,   FMT_I,       exec_sltiu, 0, 0});
+    register_instruction((InstructionHandler){"xori",  OP_IARITH, 0x4, -1,   FMT_I,       exec_xori, 0, 0});
+    register_instruction((InstructionHandler){"ori",   OP_IARITH, 0x6, -1,   FMT_I,       exec_ori, 0, 0});
+    register_instruction((InstructionHandler){"andi",  OP_IARITH, 0x7, -1,   FMT_I,       exec_andi, 0, 0});
+    register_instruction((InstructionHandler){"slli",  OP_IARITH, 0x1, 0x00, FMT_I_SHAMT, exec_slli, 0, 0});
+    register_instruction((InstructionHandler){"srli",  OP_IARITH, 0x5, 0x00, FMT_I_SHAMT, exec_srli, 0, 0});
+    register_instruction((InstructionHandler){"srai",  OP_IARITH, 0x5, 0x20, FMT_I_SHAMT, exec_srai, 0, 0});
 
     /* Loads */
-    register_instruction((InstructionHandler){"lb",  OP_LOAD, 0x0, -1, FMT_I_LOAD, exec_lb});
-    register_instruction((InstructionHandler){"lh",  OP_LOAD, 0x1, -1, FMT_I_LOAD, exec_lh});
-    register_instruction((InstructionHandler){"lw",  OP_LOAD, 0x2, -1, FMT_I_LOAD, exec_lw});
-    register_instruction((InstructionHandler){"lbu", OP_LOAD, 0x4, -1, FMT_I_LOAD, exec_lbu});
-    register_instruction((InstructionHandler){"lhu", OP_LOAD, 0x5, -1, FMT_I_LOAD, exec_lhu});
+    register_instruction((InstructionHandler){"lb",  OP_LOAD, 0x0, -1, FMT_I_LOAD, exec_lb, 0, 0});
+    register_instruction((InstructionHandler){"lh",  OP_LOAD, 0x1, -1, FMT_I_LOAD, exec_lh, 0, 0});
+    register_instruction((InstructionHandler){"lw",  OP_LOAD, 0x2, -1, FMT_I_LOAD, exec_lw, 0, 0});
+    register_instruction((InstructionHandler){"lbu", OP_LOAD, 0x4, -1, FMT_I_LOAD, exec_lbu, 0, 0});
+    register_instruction((InstructionHandler){"lhu", OP_LOAD, 0x5, -1, FMT_I_LOAD, exec_lhu, 0, 0});
 
     /* Stores */
-    register_instruction((InstructionHandler){"sb", OP_STORE, 0x0, -1, FMT_S, exec_sb});
-    register_instruction((InstructionHandler){"sh", OP_STORE, 0x1, -1, FMT_S, exec_sh});
-    register_instruction((InstructionHandler){"sw", OP_STORE, 0x2, -1, FMT_S, exec_sw});
+    register_instruction((InstructionHandler){"sb", OP_STORE, 0x0, -1, FMT_S, exec_sb, 0, 0});
+    register_instruction((InstructionHandler){"sh", OP_STORE, 0x1, -1, FMT_S, exec_sh, 0, 0});
+    register_instruction((InstructionHandler){"sw", OP_STORE, 0x2, -1, FMT_S, exec_sw, 0, 0});
 
     /* Branches */
-    register_instruction((InstructionHandler){"beq",  OP_BRANCH, 0x0, -1, FMT_B, exec_beq});
-    register_instruction((InstructionHandler){"bne",  OP_BRANCH, 0x1, -1, FMT_B, exec_bne});
-    register_instruction((InstructionHandler){"blt",  OP_BRANCH, 0x4, -1, FMT_B, exec_blt});
-    register_instruction((InstructionHandler){"bge",  OP_BRANCH, 0x5, -1, FMT_B, exec_bge});
-    register_instruction((InstructionHandler){"bltu", OP_BRANCH, 0x6, -1, FMT_B, exec_bltu});
-    register_instruction((InstructionHandler){"bgeu", OP_BRANCH, 0x7, -1, FMT_B, exec_bgeu});
+    register_instruction((InstructionHandler){"beq",  OP_BRANCH, 0x0, -1, FMT_B, exec_beq, 0, 0});
+    register_instruction((InstructionHandler){"bne",  OP_BRANCH, 0x1, -1, FMT_B, exec_bne, 0, 0});
+    register_instruction((InstructionHandler){"blt",  OP_BRANCH, 0x4, -1, FMT_B, exec_blt, 0, 0});
+    register_instruction((InstructionHandler){"bge",  OP_BRANCH, 0x5, -1, FMT_B, exec_bge, 0, 0});
+    register_instruction((InstructionHandler){"bltu", OP_BRANCH, 0x6, -1, FMT_B, exec_bltu, 0, 0});
+    register_instruction((InstructionHandler){"bgeu", OP_BRANCH, 0x7, -1, FMT_B, exec_bgeu, 0, 0});
 
     /* Jumps / upper immediate */
-    register_instruction((InstructionHandler){"jal",   OP_JAL,   -1,  -1, FMT_J,      exec_jal});
-    register_instruction((InstructionHandler){"jalr",  OP_JALR,  0x0, -1, FMT_I_JALR, exec_jalr});
-    register_instruction((InstructionHandler){"lui",   OP_LUI,   -1,  -1, FMT_U,      exec_lui});
-    register_instruction((InstructionHandler){"auipc", OP_AUIPC, -1,  -1, FMT_U,      exec_auipc});
+    register_instruction((InstructionHandler){"jal",   OP_JAL,   -1,  -1, FMT_J,      exec_jal, 0, 0});
+    register_instruction((InstructionHandler){"jalr",  OP_JALR,  0x0, -1, FMT_I_JALR, exec_jalr, 0, 0});
+    register_instruction((InstructionHandler){"lui",   OP_LUI,   -1,  -1, FMT_U,      exec_lui, 0, 0});
+    register_instruction((InstructionHandler){"auipc", OP_AUIPC, -1,  -1, FMT_U,      exec_auipc, 0, 0});
 
     /* System */
-    register_instruction((InstructionHandler){"ecall", OP_SYSTEM, 0x0, -1, FMT_I_SYS, exec_ecall});
+    register_instruction((InstructionHandler){"ecall", OP_SYSTEM, 0x0, -1, FMT_I_SYS, exec_ecall, 0, 0});
 }

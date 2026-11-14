@@ -1,7 +1,7 @@
 CC      := gcc
-CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -g -O0 \
+CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -g -O0 -frounding-math \
            -Icore -Iisa -Iassembler -Iui -Ipipeline
-LDFLAGS :=
+LDFLAGS := -lm
 BIN     := rvsim
 
 SRCS := \
@@ -11,6 +11,9 @@ SRCS := \
     core/decoder.c \
     core/executor.c \
     isa/rv32i_base.c \
+    isa/fp_helpers.c \
+    isa/rv32f.c \
+    isa/zicsr.c \
     assembler/assembler.c \
     ui/cli_display.c \
     pipeline/control.c \
@@ -23,7 +26,7 @@ SRCS := \
 OBJS := $(SRCS:.c=.o)
 TESTS := tests/micro.s tests/forward_priority.s tests/sample1_sum_loop.s tests/sample2_mem_and_branches.s tests/sample3_hazards.s tests/sample4_data_hazards.s tests/load_use_cases.s tests/sample5_addi.s tests/sample6_rv32i_coverage.s tests/sample7_illegal_fault.s tests/sample8_memory_fault.s tests/t1_counted_loop.s tests/t2_nested_loops.s tests/t3_alternating.s tests/t4_calls.s
 
-.PHONY: test-lab4 all clean run memcheck test test-single test-pipeline verify verify-reference trace
+.PHONY: test-lab4 test-extended all clean run memcheck test test-single test-pipeline verify verify-reference trace
 all: $(BIN)
 
 $(BIN): $(OBJS)
@@ -113,6 +116,9 @@ verify-reference: $(BIN)
 
 test-lab4: $(BIN)
 	@./check_lab4.sh
+
+test-extended: $(BIN)
+	@./tests/run_extended_tests.sh
 
 test: test-single test-pipeline verify verify-reference test-lab4
 

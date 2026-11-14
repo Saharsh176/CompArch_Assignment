@@ -17,6 +17,9 @@ typedef enum {
 
 typedef struct {
     uint32_t regs[NUM_REGS];    /* x0..x31. x0 is always read as 0 (enforced in accessors) */
+    uint32_t fregs[NUM_REGS];   /* f0..f31: raw IEEE-754 single-precision bits */
+    uint32_t fcsr;              /* frm[7:5], fflags[4:0] */
+    int fp_used;                /* set once an FP/CSR instruction is executed */
     uint32_t pc;
     uint32_t next_pc;           /* instruction handlers write here; executor commits it to pc */
     CPUStatus status;
@@ -34,6 +37,12 @@ void cpu_reset(CPUState *cpu, uint32_t start_pc);
  * reimplemented (and potentially forgotten) in every instruction handler. */
 uint32_t cpu_read_reg(const CPUState *cpu, int idx);
 void cpu_write_reg(CPUState *cpu, int idx, uint32_t value);
+uint32_t cpu_read_freg(const CPUState *cpu, int idx);
+void cpu_write_freg(CPUState *cpu, int idx, uint32_t value);
+void cpu_raise_fflags(CPUState *cpu, uint32_t flags);
+int cpu_frm(const CPUState *cpu);
+int cpu_freg_index_from_name(const char *name);
+const char *cpu_freg_abi_name(int idx);
 
 /* ABI register names (zero, ra, sp, ... ) used by the assembler and the CLI */
 const char *cpu_reg_abi_name(int idx);

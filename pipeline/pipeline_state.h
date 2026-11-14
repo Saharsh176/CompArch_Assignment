@@ -34,6 +34,8 @@ typedef struct {
     ControlSignals ctrl;
     uint32_t rs1_val;
     uint32_t rs2_val;
+    uint32_t rs3_val;
+    uint32_t sys_a0, sys_a7; /* captured ID operands for the no-hazard test model */
     uint32_t pred_next;   /* guess carried down to EX for comparison */
 } IDEX;
 
@@ -47,7 +49,9 @@ typedef struct {
     ControlSignals ctrl;
     uint32_t alu_result;
     uint32_t store_val;
+    uint32_t sys_a0, sys_a7;
     uint32_t fault_addr;
+    char fault_msg[128];
     int bkind;            /* Lab 4: 0 none, 1 cond branch, 2 jal, 3 jalr */
     int redir;            /* Lab 4: this instruction caused a redirect */
 } EXMEM;
@@ -61,7 +65,9 @@ typedef struct {
     const InstructionHandler *handler;
     ControlSignals ctrl;
     uint32_t wb_val;
+    uint32_t sys_a0, sys_a7;
     uint32_t fault_addr;
+    char fault_msg[128];
     int bkind;
     int redir;
 } MEMWB;
@@ -80,6 +86,9 @@ typedef struct {
     uint64_t fwd_ex;
     uint64_t fwd_mem;
     int forwarding;
+    int hazard_enabled;
+    int sample_mode;             /* compatibility mode for supplied lab2/lab3 golden tests */
+    int raw_mode;                /* Lab 2 no-hazard output convention */
 
     /* ---- Lab Sheet 4: branch prediction ---------------------------------
      * lab4 = 0 reproduces the Lab 3 machine exactly (--pipeline,
@@ -104,8 +113,10 @@ typedef struct {
 void pipeline_init(Pipeline *p, int forwarding);
 /* Select the Lab 4 machine and its predictor (resets the predictor table). */
 void pipeline_enable_lab4(Pipeline *p, const BranchPredictor *bp, int trace);
+void pipeline_enable_sample(Pipeline *p, int hazard_enabled, int raw_mode);
 CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem);
 void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cycles);
+void pipeline_print_summary(const Pipeline *p);
 
 #endif /* PIPELINE_STATE_H */
 

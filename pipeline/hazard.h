@@ -9,7 +9,7 @@ typedef struct {
 } HazardVerdict;
 
 typedef struct {
-    uint32_t a, b;  /* operands EX should actually use */
+    uint32_t a, b, c;  /* operands EX should actually use */
     int fwd_ex, fwd_mem;
 } Operands;
 

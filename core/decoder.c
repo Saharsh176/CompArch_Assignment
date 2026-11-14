@@ -11,7 +11,15 @@ DecodeStatus decode_instruction(uint32_t raw, DecodedInstr *out, const Instructi
     uint32_t rs2    = (raw >> 20) & 0x1F;
     uint32_t funct7 = (raw >> 25) & 0x7F;
 
-    const InstructionHandler *h = isa_find_by_opcode(opcode, funct3, funct7);
+    const InstructionHandler *h = NULL;
+    for (int k = 0; k < isa_registry_count(); k++) {
+        const InstructionHandler *candidate = isa_registry_get(k);
+        if (candidate->opcode != opcode) continue;
+        if (candidate->funct3 != -1 && (uint32_t)candidate->funct3 != funct3) continue;
+        if (candidate->funct7 != -1 && (uint32_t)candidate->funct7 != funct7) continue;
+        if ((candidate->flags & IF_RS2_FIXED) && candidate->rs2_sel != rs2) continue;
+        h = candidate; break;
+    }
     if (!h) {
         *handler_out = NULL;
         return DECODE_UNKNOWN_INSTRUCTION;
@@ -20,6 +28,9 @@ DecodeStatus decode_instruction(uint32_t raw, DecodedInstr *out, const Instructi
     int32_t imm = 0;
     switch (h->format) {
         case FMT_R:
+        case FMT_R2:
+        case FMT_R4:
+        case FMT_CSR:
         case FMT_I_SYS:
             imm = 0;
             break;
@@ -79,6 +90,8 @@ DecodeStatus decode_instruction(uint32_t raw, DecodedInstr *out, const Instructi
     out->rs2    = rs2;
     out->imm    = imm;
     out->raw    = raw;
+    out->rs3    = (raw >> 27) & 0x1fu;
+    out->csr    = (raw >> 20) & 0xfffu;
 
     *handler_out = h;
     return DECODE_OK;

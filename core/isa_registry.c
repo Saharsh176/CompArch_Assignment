@@ -22,6 +22,11 @@ int register_instruction(InstructionHandler handler) {
     g_registry[g_count++] = handler;
     return 0;
 }
+int register_instruction_ex(InstructionHandler handler, uint32_t flags, uint32_t rs2_sel) {
+    handler.flags = flags;
+    handler.rs2_sel = rs2_sel;
+    return register_instruction(handler);
+}
 
 const InstructionHandler *isa_find_by_opcode(uint32_t opcode, uint32_t funct3, uint32_t funct7) {
     for (int i = 0; i < g_count; i++) {

@@ -6,9 +6,18 @@
 #include <stdio.h>
 #include <string.h>
 
+static uint32_t read_unified(const CPUState *c, uint32_t r) {
+    return r >= 32 ? cpu_read_freg(c, (int)(r - 32)) : cpu_read_reg(c, (int)r);
+}
+static void write_unified(CPUState *c, uint32_t r, uint32_t v) {
+    if (r >= 32) cpu_write_freg(c, (int)(r - 32), v);
+    else cpu_write_reg(c, (int)r, v);
+}
+
 void pipeline_init(Pipeline *p, int forwarding) {
     memset(p, 0, sizeof(*p));
     p->forwarding = forwarding;
+    p->hazard_enabled = 1;
     p->bp = &bp_not_taken;      /* Lab 3 behaviour unless lab4 is enabled */
 }
 
@@ -17,6 +26,13 @@ void pipeline_enable_lab4(Pipeline *p, const BranchPredictor *bp, int trace) {
     p->trace = trace;
     p->bp = bp ? bp : bp_default();
     p->bp->reset(&p->bps);
+}
+
+void pipeline_enable_sample(Pipeline *p, int hazard_enabled, int raw_mode) {
+    p->sample_mode = 1;
+    p->hazard_enabled = hazard_enabled;
+    p->raw_mode = raw_mode;
+    p->lab4 = 0;
 }
 
 /* Lab 4 IF pre-decode helpers: only the opcode and immediate are read,
@@ -72,12 +88,19 @@ static uint32_t alu(const DecodedInstr *i, const InstructionHandler *h,
     }
 }
 
-static void raise_pipeline_fault(CPUState *cpu, int fault, uint32_t addr) {
+static void raise_pipeline_fault(CPUState *cpu, int fault, uint32_t addr,
+                                 uint32_t raw, int has_handler, const char *message) {
     cpu->status = (fault == PF_ILLEGAL) ? CPU_ILLEGAL_INSTRUCTION : CPU_MEM_FAULT;
     cpu->fault_addr = addr;
-    if (fault == PF_ILLEGAL) {
+    cpu->pc = addr;
+    if (fault == PF_ILLEGAL && !has_handler) {
         snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
-                 "unknown instruction at pc=0x%08x", addr);
+                 "unknown instruction 0x%08x at pc=0x%08x (no handler registered)", raw, addr);
+    } else if (fault == PF_ILLEGAL && message && message[0]) {
+        snprintf(cpu->fault_msg, sizeof(cpu->fault_msg), "%s", message);
+    } else if (fault == PF_ILLEGAL) {
+        snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
+                 "illegal instruction 0x%08x at pc=0x%08x", raw, addr);
     } else if (fault == PF_FETCH) {
         snprintf(cpu->fault_msg, sizeof(cpu->fault_msg),
                  "instruction fetch out of bounds at pc=0x%08x", addr);
@@ -104,7 +127,8 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
     if (p->mem_wb.valid) {
         if (p->mem_wb.fault != PF_NONE) {
             raise_pipeline_fault(cpu, p->mem_wb.fault,
-                                 p->mem_wb.fault_addr);
+                                 p->mem_wb.fault_addr, p->mem_wb.instr.raw,
+                                 p->mem_wb.handler != NULL, p->mem_wb.fault_msg);
             /* Kill younger work and commit this final clock tick. */
             nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
             *p = nx;
@@ -114,13 +138,20 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         if (p->mem_wb.ctrl.reg_write) {
             uint32_t value = p->mem_wb.wb_val;
             if (p->mem_wb.ctrl.wb_src == WB_PC4) value = p->mem_wb.pc + 4u;
-            cpu_write_reg(cpu, (int)p->mem_wb.instr.rd, value);
+            write_unified(cpu, p->mem_wb.ctrl.dst, value);
         }
 
         if (p->mem_wb.ctrl.is_system && p->mem_wb.handler && p->mem_wb.handler->execute) {
             uint32_t saved_pc = cpu->pc;
+            uint32_t saved_a0 = cpu->regs[10], saved_a7 = cpu->regs[17];
             cpu->pc = p->mem_wb.pc;
+            if (p->sample_mode && !p->hazard_enabled) {
+                cpu->regs[10] = p->mem_wb.sys_a0;
+                cpu->regs[17] = p->mem_wb.sys_a7;
+            }
             p->mem_wb.handler->execute(cpu, mem, &p->mem_wb.instr);
+            cpu->regs[10] = saved_a0;
+            cpu->regs[17] = saved_a7;
             cpu->pc = saved_pc;
         }
         nx.retired++;
@@ -138,7 +169,8 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
             }
         }
         if (cpu->status != CPU_RUNNING) {
-            /* An ecall exit retires in order; younger prefetched instructions die. */
+            /* An ecall exit retires in order; expose its architectural next PC. */
+            cpu->pc = p->mem_wb.pc;
             nx.if_id.valid = nx.id_ex.valid = nx.ex_mem.valid = nx.mem_wb.valid = 0;
             *p = nx;
             return cpu->status;
@@ -154,9 +186,12 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         nx.mem_wb.handler = p->ex_mem.handler;
         nx.mem_wb.ctrl = p->ex_mem.ctrl;
         nx.mem_wb.fault_addr = p->ex_mem.fault_addr;
+        snprintf(nx.mem_wb.fault_msg, sizeof(nx.mem_wb.fault_msg), "%s", p->ex_mem.fault_msg);
         nx.mem_wb.bkind = p->ex_mem.bkind;
         nx.mem_wb.redir = p->ex_mem.redir;
         nx.mem_wb.wb_val = p->ex_mem.alu_result;
+        nx.mem_wb.sys_a0 = p->ex_mem.sys_a0;
+        nx.mem_wb.sys_a7 = p->ex_mem.sys_a7;
 
         if (p->ex_mem.fault == PF_NONE && p->ex_mem.ctrl.mem_read) {
             uint32_t data = 0;
@@ -197,11 +232,17 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         nx.ex_mem.handler = p->id_ex.handler;
         nx.ex_mem.ctrl = p->id_ex.ctrl;
         nx.ex_mem.store_val = p->id_ex.rs2_val;
+        nx.ex_mem.sys_a0 = p->id_ex.sys_a0;
+        nx.ex_mem.sys_a7 = p->id_ex.sys_a7;
         nx.ex_mem.fault_addr = p->id_ex.pc;
         nx.ex_mem.bkind = 0;
         nx.ex_mem.redir = 0;
 
         if (p->id_ex.fault == PF_NONE) {
+            if (p->id_ex.ctrl.rd_fp || p->id_ex.ctrl.rs2_fp ||
+                p->id_ex.handler->opcode == 0x53u ||
+                p->id_ex.handler->format == FMT_R4 ||
+                p->id_ex.handler->format == FMT_CSR) cpu->fp_used = 1;
             Operands operands = forward_operands(p, &p->id_ex);
             uint32_t a = operands.a, b = operands.b;
             nx.fwd_ex += (uint64_t)operands.fwd_ex;
@@ -251,6 +292,29 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
                     }
                 }
                 nx.ex_mem.alu_result = p->id_ex.pc + 4u;
+            } else if (p->id_ex.handler &&
+                       (p->id_ex.handler->opcode == 0x53u ||
+                        p->id_ex.handler->format == FMT_R4 ||
+                        p->id_ex.handler->format == FMT_CSR)) {
+                /* Extension instructions execute through their registered handler.
+                   Operands are injected into a temporary architectural snapshot so
+                   the handler sees forwarded values, while its destination is held
+                   until WB. fcsr is deliberately committed in EX, in program order. */
+                CPUState tmp = *cpu;
+                tmp.pc = p->id_ex.pc;
+                tmp.next_pc = p->id_ex.pc + 4u;
+                if (p->id_ex.ctrl.uses_rs1) write_unified(&tmp, p->id_ex.ctrl.src1, a);
+                if (p->id_ex.ctrl.uses_rs2) write_unified(&tmp, p->id_ex.ctrl.src2, b);
+                if (p->id_ex.ctrl.uses_rs3) write_unified(&tmp, p->id_ex.ctrl.src3, operands.c);
+                p->id_ex.handler->execute(&tmp, mem, (DecodedInstr *)&p->id_ex.instr);
+                cpu->fcsr = tmp.fcsr;
+                if (tmp.status == CPU_ILLEGAL_INSTRUCTION) {
+                    nx.ex_mem.fault = PF_ILLEGAL;
+                    nx.ex_mem.fault_addr = p->id_ex.pc;
+                    snprintf(nx.ex_mem.fault_msg, sizeof(nx.ex_mem.fault_msg), "%s", tmp.fault_msg);
+                } else if (p->id_ex.ctrl.reg_write) {
+                    nx.ex_mem.alu_result = read_unified(&tmp, p->id_ex.ctrl.dst);
+                }
             } else {
                 nx.ex_mem.alu_result = alu(&p->id_ex.instr, p->id_ex.handler,
                                            p->id_ex.pc, a, b);
@@ -260,7 +324,7 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
 
     /* ID: decode and ask the standalone hazard unit whether to interlock. */
     HazardVerdict hz = {0, 0};
-    if (p->if_id.valid && !redirect && p->if_id.fault == PF_NONE) {
+    if (p->hazard_enabled && p->if_id.valid && !redirect && p->if_id.fault == PF_NONE) {
         DecodedInstr candidate;
         const InstructionHandler *candidate_handler = NULL;
         if (decode_instruction(p->if_id.raw, &candidate, &candidate_handler) == DECODE_OK) {
@@ -281,6 +345,7 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         nx.id_ex.valid = 1;
         nx.id_ex.pc = p->if_id.pc;
         nx.id_ex.pred_next = p->if_id.pred_next;
+        nx.id_ex.instr.raw = p->if_id.raw;
         nx.id_ex.fault = p->if_id.fault;
         if (p->if_id.fault == PF_FETCH) {
             nx.id_ex.fault = PF_FETCH;
@@ -294,8 +359,13 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
                 nx.id_ex.ctrl = (ControlSignals){0};
             } else {
                 nx.id_ex.ctrl = control_decode(&nx.id_ex.instr, nx.id_ex.handler);
-                nx.id_ex.rs1_val = cpu_read_reg(cpu, (int)nx.id_ex.instr.rs1);
-                nx.id_ex.rs2_val = cpu_read_reg(cpu, (int)nx.id_ex.instr.rs2);
+                nx.id_ex.rs1_val = nx.id_ex.ctrl.uses_rs1 ? read_unified(cpu, nx.id_ex.ctrl.src1) : 0;
+                nx.id_ex.rs2_val = nx.id_ex.ctrl.uses_rs2 ? read_unified(cpu, nx.id_ex.ctrl.src2) : 0;
+                nx.id_ex.rs3_val = nx.id_ex.ctrl.uses_rs3 ? read_unified(cpu, nx.id_ex.ctrl.src3) : 0;
+                if (p->sample_mode && !p->hazard_enabled && nx.id_ex.ctrl.is_system) {
+                    nx.id_ex.sys_a0 = cpu_read_reg(cpu, 10);
+                    nx.id_ex.sys_a7 = cpu_read_reg(cpu, 17);
+                }
             }
         }
     }
@@ -303,6 +373,7 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
     /* A redirect kills the younger decoded/fetched instruction. */
     if (redirect) {
         nx.flushes++;
+        if (p->sample_mode) { nx.redirects++; nx.squashed += 2; }
         nx.id_ex.valid = 0;
         nx.if_id.valid = 0;
         /* Lab 3 machine: target is fetched in this same tick (1-cycle loss). */
@@ -312,7 +383,7 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
     /* IF: freeze on stall; otherwise fetch the guessed path. */
     int fetched = 0;
     uint32_t fetched_pc = 0;
-    if (!stall && cpu->status == CPU_RUNNING) {
+    if (!stall && (!redirect || p->lab4 || !p->sample_mode) && cpu->status == CPU_RUNNING) {
         uint32_t fetch_pc = cpu->pc;
         uint32_t raw = 0;
         MemStatus ms = memory_read_word(mem, fetch_pc, &raw);
@@ -378,7 +449,7 @@ void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cy
             !p->if_id.valid && !p->id_ex.valid && !p->ex_mem.valid && !p->mem_wb.valid)
             break;
     }
-    if (!p->lab4) {
+    if (!p->lab4 && !p->sample_mode) {
         printf("pipeline: mode=%s cycles=%llu retired=%llu stalls=%llu flushes=%llu CPI=%.3f fwd_ex=%llu fwd_mem=%llu load_use=%llu\n",
                p->forwarding ? "forward" : "stall",
                (unsigned long long)p->cycles, (unsigned long long)p->retired,
@@ -388,24 +459,34 @@ void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cy
                (unsigned long long)p->load_use_stalls);
         return;
     }
-    /* Lab Sheet 4, Section 8 statistics block. */
-    printf("pipeline = 5-stage, hazard unit '%s', predictor '%s'\n",
-           p->forwarding ? "forward" : "stall", p->bp->name);
-    printf("retired = %llu\n", (unsigned long long)p->retired);
-    printf("CPI = %.3f\n", p->retired ? (double)p->cycles / (double)p->retired : 0.0);
-    printf("stalls = %llu\n", (unsigned long long)p->stalls);
-    printf("forwards = %llu\n", (unsigned long long)(p->fwd_ex + p->fwd_mem));
-    printf("branches = %llu conditional branches executed\n", (unsigned long long)p->branches);
-    printf("mispredicts = %llu ... of which the guess was wrong\n", (unsigned long long)p->mispredicts);
-    if (p->branches)
-        printf("accuracy = %.1f%%\n", 100.0 * (double)(p->branches - p->mispredicts) / (double)p->branches);
-    else
-        printf("accuracy = n/a (no conditional branches)\n");
-    printf("jal = %llu redirected in IF: free\n", (unsigned long long)p->jal_count);
-    printf("jalr = %llu never predicted: 2 cycles each\n", (unsigned long long)p->jalr_count);
-    printf("redirects = %llu (%llu mispredicts + %llu jalr)\n",
-           (unsigned long long)p->redirects, (unsigned long long)p->mispredicts,
-           (unsigned long long)p->jalr_count);
-    printf("squashed = %llu instructions thrown away (2 per redirect)\n",
-           (unsigned long long)p->squashed);
+    /* Lab 4/5 statistics are printed by main after the architectural state. */
+}
+
+void pipeline_print_summary(const Pipeline *p) {
+    if (p->sample_mode && p->raw_mode) {
+        printf("pipeline        = 5-stage, no hazard handling\n");
+    } else if (p->sample_mode && !p->hazard_enabled) {
+        printf("pipeline        = 5-stage, hazard unit 'none'\n");
+    } else if (p->sample_mode) {
+        printf("pipeline        = 5-stage, hazard unit '%s'\n", p->forwarding ? "forward" : "stall");
+    } else {
+        printf("pipeline        = 5-stage, hazard unit '%s', predictor '%s'\n",
+               p->forwarding ? "forward" : "stall", p->bp->name);
+    }
+    printf("retired         = %llu\n", (unsigned long long)p->retired);
+    printf("CPI             = %.3f\n", p->retired ? (double)p->cycles / (double)p->retired : 0.0);
+    if (!p->sample_mode || !p->raw_mode) {
+        printf("stalls          = %llu\n", (unsigned long long)p->stalls);
+        printf("forwards        = %llu\n", (unsigned long long)(p->fwd_ex + p->fwd_mem));
+    }
+    if (!p->sample_mode) {
+        printf("branches        = %llu\n", (unsigned long long)p->branches);
+        printf("mispredicts     = %llu\n", (unsigned long long)p->mispredicts);
+        printf("accuracy        = %.1f%%\n", p->branches ?
+               100.0 * (double)(p->branches - p->mispredicts) / (double)p->branches : 100.0);
+        printf("jal             = %llu\n", (unsigned long long)p->jal_count);
+        printf("jalr            = %llu\n", (unsigned long long)p->jalr_count);
+    }
+    printf("redirects       = %llu\n", (unsigned long long)(p->sample_mode ? p->redirects : p->redirects));
+    printf("squashed        = %llu\n", (unsigned long long)p->squashed);
 }

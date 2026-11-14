@@ -1,159 +1,126 @@
-# RV32I Simulator — Lab Sheet 2: Five-Stage Pipeline
+# RV32 Simulator — Lab Sheets 2–5
 
-This project contains the original single-cycle RV32I simulator and a five-stage
-pipelined implementation for the W7 RISC-V Pipeline Lab Sheet.
-
-## Architecture
-
-The original single-cycle execution path in `core/` remains available as the
-reference implementation. The pipeline is implemented in `pipeline/` and uses
-four latches:
-
-- `IFID`: fetched instruction, PC, validity and fetch-fault state.
-- `IDEX`: decoded instruction, handler, control signals and captured operands.
-- `EXMEM`: ALU result, store value and memory/fault information.
-- `MEMWB`: write-back value and control information.
-
-`pipeline_cycle()` snapshots the old pipeline state into `nx`, has every stage
-read the old latches and write the next latches, then commits the state once at
-the end of the cycle. Stages are WB, MEM, EX, ID and IF. Control signals are
-generated in ID. The hazard unit uses the lab's conservative three-latch
-interlock (ID/EX, EX/MEM and MEM/WB); there is no forwarding. Branches and jumps
-are resolved in EX and redirect the fetch PC while flushing younger work.
-Faults are carried to WB, where they become visible as CPU status values.
+This repository contains a single-cycle RV32I reference engine and a five-stage
+pipeline extended with data-hazard handling, branch prediction, and RV32F
+single-precision floating point.
 
 ## Build
 
-Requires GCC (C11) and GNU Make. From the project root:
+Requires GCC (C11) and GNU Make.
 
 ```sh
 make clean
 make
 ```
 
-The build uses `-Wall -Wextra -Wpedantic` and should complete without warnings.
+The build uses `-Wall -Wextra -Wpedantic -frounding-math` and links `libm`.
+The current build completes without compiler warnings.
 
-## Run
+## Run modes
 
 ```sh
-# Original single-cycle reference engine
-./rvsim tests/sample1_sum_loop.s --batch
+# Single-cycle architectural oracle
+./rvsim tests/f1_broad.s --batch --single-cycle
 
-# Five-stage pipeline
+# Lab 4/5 pipeline: forwarding + 2-bit predictor by default
+./rvsim tests/f1_broad.s --batch
+
+# Select the Lab 4/5 hazard policy and branch predictor
+./rvsim tests/f3_kernel.s --batch --hazard forward --predictor 2bit
+./rvsim tests/f3_kernel.s --batch --hazard stall  --predictor btfn
+
+# Lab 3 sheet's original modes (kept for its reference checkpoints)
 ./rvsim tests/sample1_sum_loop.s --pipeline
+./rvsim tests/sample1_sum_loop.s --pipeline-forward
 
-# Optional cycle and memory limits
-./rvsim tests/sample1_sum_loop.s --pipeline --max-cycles 100000
-./rvsim tests/sample9_fetch_fault.s --pipeline --mem-size 4
+# Supplied Lab 2/3 sample-suite timing convention (no predictor, 2-cycle redirects)
+./rvsim tests/p1_broad.s --pipeline-raw
+./rvsim tests/h1_broad.s --pipeline-sample --hazard none
+./rvsim tests/h1_broad.s --pipeline-sample --hazard stall
+./rvsim tests/h1_broad.s --pipeline-sample --hazard forward
 ```
 
-Both modes print the architectural register file and CPU status. Pipeline mode
-also prints cycles, retired instructions, stalls, flushes and CPI.
+`--pipeline` and `--pipeline-forward` preserve the Lab 3 sheet's original
+one-cycle redirect timing and remain separate from the Lab 4 predictor path.
+`--pipeline-raw` and `--pipeline-sample` are compatibility modes for the
+provided sample archive, whose Lab 2/3 goldens use a no-prediction,
+two-cycle-redirect pipeline. The `none` policy intentionally demonstrates
+incorrect results when dependencies are not handled.
+
+The normal `--batch` mode uses the Lab 4/5 pipeline unless `--single-cycle` is
+specified. The default predictor is `2bit`; available predictors are
+`not-taken`, `btfn`, `1bit`, and `2bit`.
+
+## Implemented functionality
+
+### Lab 3 — data hazards
+
+- Standalone hazard detection unit and unified source/destination metadata.
+- Stalling-only policy retained.
+- EX/MEM and MEM/WB forwarding with EX/MEM priority.
+- Load-use interlock, including the third source operand used by FMA.
+- Forwarding and stall counters.
+
+### Lab 4 — branch prediction
+
+- Always-not-taken and backward-taken/forward-not-taken static predictors.
+- One-bit and two-bit saturating dynamic predictors.
+- IF pre-decode for conditional branches and `jal`; `jalr` remains unpredicted.
+- Mispredict, redirect, squashed-instruction, and accuracy counters.
+
+### Lab 5 — RV32F
+
+- Separate 32-register floating-point file (`f0`–`f31`) and `fcsr`.
+- All 26 listed RV32F instructions: `flw`, `fsw`, sign injection, raw moves,
+  classification, arithmetic, square root, fused multiply-adds, comparisons,
+  min/max, and signed/unsigned integer conversions.
+- Five rounding modes (`rne`, `rtz`, `rdn`, `rup`, `rmm`) and dynamic `frm`.
+- Sticky `NV`, `DZ`, `OF`, `UF`, and `NX` flags, with CSR read/write support.
+- Canonical NaN handling, signalling-NaN exceptions, signed-zero min/max,
+  conversion saturation, and fused single-rounding operations.
+- FP values use the same unified hazard and forwarding machinery as integer
+  values; `flw`/`fsw` use the pipeline MEM stage.
+
+The uploaded starting archive did not contain the Lab 5 infrastructure described
+as pre-supplied in the sheet (FP state, extended registry metadata, FP decoder /
+assembler support, CSR support, or FP-aware pipeline latches). Those missing
+pieces were added to the corresponding core, ISA, assembler, and pipeline files
+so the Lab 5 ISA implementation could run end to end. The single-cycle engine
+remains the reference oracle.
 
 ## Tests
 
 ```sh
-make test-single     # all normal/fault single-cycle programs
-make test-pipeline   # all normal/fault pipeline programs, plus fetch-fault test
-make verify          # compare x0..x31 between both engines and check cycle identity
-make test            # run all of the above
-```
-
-The verification target excludes PC and cycle count from register comparison:
-the pipeline fetch PC legitimately runs ahead. For normal terminating programs,
-it also checks the lab's accounting identity:
-
-```text
-cycles = retired + stalls + flushes + 4
-```
-
-Test programs:
-
-- `sample1_sum_loop.s`: loop, arithmetic, branch, jump, ECALL; expected print is 55.
-- `sample2_mem_and_branches.s`: byte store, signed/unsigned byte loads and branch.
-- `sample3_hazards.s`: load-use dependency and jump/branch behaviour.
-- `sample5_addi.s`: independent ADDI sequence.
-- `sample6_rv32i_coverage.s`: directed arithmetic, shift, U-type, load/store, branch, JAL and JALR coverage.
-- `sample7_illegal_fault.s`: illegal-instruction fault propagation.
-- `sample8_memory_fault.s`: data-memory fault propagation.
-- `sample9_fetch_fault.s`: instruction-fetch fault propagation (run with `--mem-size 4`).
-
-## Reference figures and sample-3 note
-
-With the conservative three-latch interlock and EX-stage branch resolution,
-`sample1_sum_loop.s` produces 108 cycles, 53 retired instructions, 40 stalls,
-11 flushes and CPI 2.038. `sample2_mem_and_branches.s` produces 26 cycles,
-13 retired instructions, 8 stalls, 1 flush and CPI 2.000. These match the
-lab-sheet reference table.
-
-The ZIP's `sample3_hazards.s` executes 11 dynamic instructions, not the 18
-listed for sample 3 in the lab-sheet reference table. The uploaded PDF refers
-to an Appendix A version of that test, but the supplied PDF page 6 is blank
-and the ZIP does not contain that 18-instruction version. Therefore its exact
-19-stall/3-flush reference row cannot be verified from the supplied materials.
-The existing sample is retained rather than inventing an alleged Appendix A
-program. Its architectural registers are still compared against the reference
-engine, and the cycle-accounting identity is checked.
-
-## Scope
-
-The implementation supports the RV32I instruction subset listed in the lab
-sheet: R-type arithmetic/logical/shifts, I-type arithmetic/logical/shifts,
-LUI/AUIPC, byte/halfword/word loads and stores, all six conditional branches,
-JAL, JALR and ECALL. It does not implement forwarding, branch prediction or
-extensions outside RV32I; these are not required by this lab sheet.
-
-## Lab Sheet 3: data hazards and forwarding
-
-The original Lab 2 stalling pipeline remains available:
-
-```bash
-./rvsim tests/sample1_sum_loop.s --pipeline
-```
-
-The Lab 3 forwarding pipeline is available separately:
-
-```bash
-./rvsim tests/sample1_sum_loop.s --pipeline-forward
-```
-
-Run the worked five-instruction comparison and the automated checks with:
-
-```bash
-./rvsim tests/micro.s --pipeline
-./rvsim tests/micro.s --pipeline-forward
+# Original project regression suite
 make test
+
+# Full supplied sample_tests.zip golden suite + extra edge/dependency tests
+make test-extended
 ```
 
-`--pipeline` retains the Lab 2 three-latch stalling policy. `--pipeline-forward` forwards from EX/MEM and MEM/WB and inserts one stall for a detected load-use dependency. See `LAB3_CHANGES.md` for implementation details and reference results. The Lab Sheet 3 PDF supplied with this project references an Appendix A `sample4_data_hazards.s` listing that is not present in that PDF; its exact reference program must be supplied before its table row can be reproduced.
+`tests/sample_tests/` contains the extracted supplied archive, including its
+expected output files. The extended test runner checks:
 
+- Lab 1 single-cycle sample cycle counts and output.
+- Lab 2 single-cycle and no-hazard pipeline goldens.
+- Lab 3 single-cycle, no-hazard, stall, and forwarding goldens.
+- Lab 4 all four predictors against every supplied golden.
+- Lab 5 single-cycle, forwarding, stall, register-file, and `fcsr` goldens.
+- Additional tests for FP signed zero, qNaN/sNaN, exception flags, RMM ties,
+  fused cancellation, `f0`, third-source forwarding, load-use, overwrite
+  priority, invalid dynamic rounding mode, and branch paths.
 
-## Lab Sheet 3: Data Hazards and Forwarding
+`make test` also runs the original smoke, register-equivalence, fault, cycle
+identity, and Lab 4 predictor checks. The test script allows the supplied
+`b3_applied` stall-mode terminal drain case's one-cycle identity exception;
+its forward-mode cycle reference remains exact.
 
-Build and run all tests:
+## Important files
 
-```bash
-make clean
-make test
-```
-
-Run the Appendix A hazard program in both policies:
-
-```bash
-./rvsim tests/sample4_data_hazards.s --pipeline
-./rvsim tests/sample4_data_hazards.s --pipeline-forward
-```
-
-Run the four targeted load-use cases from Section 7:
-
-```bash
-./rvsim tests/load_use_cases.s --pipeline-forward
-```
-
-Show the cycle-by-cycle trace for the worked example in Section 4:
-
-```bash
-make trace
-```
-
-`make test` includes register-file equivalence checks, fault checks, cycle accounting, and the reference-statistics assertions from Section 9. See `LAB3_CHANGES.md` and `TEST_RESULTS_LAB3.txt` for implementation details and the PDF's inconsistent Appendix A aggregate figures.
+- `pipeline/hazard.[ch]`: RAW detection, load-use detection, and forwarding.
+- `pipeline/branch_predictor.[ch]`, `pipeline/bp_static.c`,
+  `pipeline/bp_dynamic.c`: branch predictor interface and implementations.
+- `isa/rv32f.c`: RV32F instruction handlers and registrations.
+- `isa/fp_helpers.[ch]`: rounding, IEEE flags, and bit/float helpers.
+- `isa/zicsr.c`: CSR instructions for `fflags`, `frm`, and `fcsr`.
+- `tests/run_extended_tests.sh`: supplied golden and custom test runner.

@@ -10,6 +10,8 @@
 #include "cli_display.h"
 #include "pipeline_state.h"
 #include "branch_predictor.h"
+#include "rv32f.h"
+#include "zicsr.h"
 
 #define DEFAULT_MEM_SIZE   (1u << 20)   /* 1 MB */
 #define DEFAULT_MAX_CYCLES 1000000ull
@@ -23,8 +25,10 @@ static void usage(const char *prog) {
         "  --predictor NAME     not-taken | btfn | 1bit | 2bit (default 2bit)\n"
         "  --hazard POLICY      forward (default) | stall\n"
         "  --trace              with the pipeline: print one line per cycle\n"
-        "  --pipeline           Lab 3 machine, stalling policy (no prediction, kept for regression)\n"
-        "  --pipeline-forward   Lab 3 machine, forwarding + load-use detection\n"
+        "  --pipeline           Lab 3 sheet machine, stalling (no prediction)\n"
+        "  --pipeline-forward   Lab 3 sheet machine, forwarding + load-use detection\n"
+        "  --pipeline-sample    sample-suite timing mode; combine with --hazard none|stall|forward\n"
+        "  --pipeline-raw       Lab 2 sample-suite pipeline with no hazard handling\n"
         "  --max-cycles N       cycle limit for batch/pipeline mode (default %llu)\n"
         "  --mem-size N         memory size in bytes (default %u)\n",
         prog, (unsigned long long)DEFAULT_MAX_CYCLES, DEFAULT_MEM_SIZE);
@@ -40,7 +44,10 @@ int main(int argc, char **argv) {
     int batch_mode = 0;
     int pipeline_mode = 0;
     int forwarding_mode = 0;
-    int legacy_pipeline = 0;      /* --pipeline / --pipeline-forward: Lab 3 machine */
+    int legacy_pipeline = 0;      /* --pipeline / --pipeline-forward: Lab 3 sheet machine */
+    int sample_pipeline = 0;      /* supplied Lab 2/3 golden-test timing model */
+    int raw_pipeline = 0;
+    int hazard_enabled = 1;
     int single_cycle = 0;
     int trace = 0;
     int hazard_forward = 1;       /* Lab 4 default: forwarding hazard unit */
@@ -61,6 +68,17 @@ int main(int argc, char **argv) {
             legacy_pipeline = 1;
             forwarding_mode = 1;
             batch_mode = 1;
+        } else if (strcmp(argv[i], "--pipeline-sample") == 0) {
+            pipeline_mode = 1;
+            sample_pipeline = 1;
+            batch_mode = 1;
+        } else if (strcmp(argv[i], "--pipeline-raw") == 0) {
+            pipeline_mode = 1;
+            sample_pipeline = 1;
+            raw_pipeline = 1;
+            hazard_enabled = 0;
+            hazard_forward = 0;
+            batch_mode = 1;
         } else if (strcmp(argv[i], "--single-cycle") == 0) {
             single_cycle = 1;
         } else if (strcmp(argv[i], "--trace") == 0) {
@@ -75,9 +93,10 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "--hazard") == 0 && i + 1 < argc) {
             const char *h = argv[++i];
-            if (strcmp(h, "forward") == 0) hazard_forward = 1;
-            else if (strcmp(h, "stall") == 0) hazard_forward = 0;
-            else { fprintf(stderr, "unknown hazard policy '%s' (choose: forward stall)\n", h); return 1; }
+            if (strcmp(h, "forward") == 0) { hazard_forward = 1; hazard_enabled = 1; }
+            else if (strcmp(h, "stall") == 0) { hazard_forward = 0; hazard_enabled = 1; }
+            else if (strcmp(h, "none") == 0) { hazard_forward = 0; hazard_enabled = 0; }
+            else { fprintf(stderr, "unknown hazard policy '%s' (choose: none forward stall)\n", h); return 1; }
         } else if (strcmp(argv[i], "--max-cycles") == 0 && i + 1 < argc) {
             max_cycles = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--mem-size") == 0 && i + 1 < argc) {
@@ -91,6 +110,8 @@ int main(int argc, char **argv) {
 
     isa_registry_init();
     register_rv32i_base();
+    register_zicsr();
+    register_rv32f();
 
     Memory mem;
     if (memory_init(&mem, mem_size) != 0) {
@@ -124,7 +145,8 @@ int main(int argc, char **argv) {
         /* Run 5-stage pipeline simulator */
         Pipeline pipeline;
         pipeline_init(&pipeline, forwarding_mode);
-        if (!legacy_pipeline) pipeline_enable_lab4(&pipeline, predictor, trace);
+        if (sample_pipeline) pipeline_enable_sample(&pipeline, hazard_enabled, raw_pipeline);
+        else if (!legacy_pipeline) pipeline_enable_lab4(&pipeline, predictor, trace);
         if (legacy_pipeline)
             printf("running with 5-stage pipeline simulator (%s)...\n",
                    forwarding_mode ? "forwarding" : "stalling");
@@ -144,6 +166,7 @@ int main(int argc, char **argv) {
         printf("\n");
         print_registers(&cpu);
         print_status(&cpu);
+        if (!legacy_pipeline) pipeline_print_summary(&pipeline);
         if (cpu.status == CPU_RUNNING) {
             printf("  -> stopped: reached max cycle limit (%llu)\n", (unsigned long long)max_cycles);
         }

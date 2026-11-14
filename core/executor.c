@@ -26,6 +26,10 @@ CPUStatus execute_cycle(CPUState *cpu, Memory *mem) {
         return cpu->status;
     }
 
+    if ((handler->flags & (IF_RD_FP | IF_RS1_FP | IF_RS2_FP | IF_RS3_FP)) ||
+        handler->opcode == 0x53u || handler->format == FMT_R4 || handler->format == FMT_CSR)
+        cpu->fp_used = 1;
+
     /* Default: fall through to the next instruction. Branch/jump handlers
      * overwrite cpu->next_pc themselves when they're taken. */
     cpu->next_pc = cpu->pc + 4;

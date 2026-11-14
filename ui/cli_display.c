@@ -14,6 +14,27 @@ void print_registers(const CPUState *cpu) {
         }
         printf("\n");
     }
+    if (cpu->fp_used) {
+        printf("------------------------- fp registers ----------------------------\n");
+        for (int row = 0; row < 8; row++) {
+            for (int col = 0; col < 4; col++) {
+                int idx = row + col * 8;
+                printf("f%-2d/%-4s=0x%08x  ", idx, cpu_freg_abi_name(idx), cpu_read_freg(cpu, idx));
+            }
+            printf("\n");
+        }
+        {
+            uint32_t flags = cpu->fcsr & 31u;
+            printf("fcsr =0x%08x  (frm=%u  flags:", cpu->fcsr, (cpu->fcsr >> 5) & 7u);
+            if (!flags) printf(" none");
+            if (flags & 16u) printf(" NV");
+            if (flags & 8u) printf(" DZ");
+            if (flags & 4u) printf(" OF");
+            if (flags & 2u) printf(" UF");
+            if (flags & 1u) printf(" NX");
+            printf(")\n");
+        }
+    }
     printf("pc = 0x%08x\n", cpu->pc);
 }
 

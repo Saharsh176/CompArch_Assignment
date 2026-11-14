@@ -30,7 +30,10 @@ typedef enum {
     FMT_S,        /* rs2, imm(rs1)                   e.g. sw   a0, 0(sp)       */
     FMT_B,        /* rs1, rs2, label                 e.g. beq  a0, a1, foo     */
     FMT_U,        /* rd, imm                         e.g. lui  a0, 0x10000     */
-    FMT_J         /* rd, label                       e.g. jal  ra, foo        */
+    FMT_J,        /* rd, label                       e.g. jal  ra, foo        */
+    FMT_R2,       /* rd, rs1; rs2 may be fixed by registry */
+    FMT_R4,       /* rd, rs1, rs2, rs3 (fused FP) */
+    FMT_CSR       /* rd, csr, rs1 */
 } InstrFormat;
 
 typedef struct {
@@ -40,6 +43,8 @@ typedef struct {
     uint32_t rd, rs1, rs2;
     int32_t  imm;
     uint32_t raw;
+    uint32_t rs3;
+    uint32_t csr;
 } DecodedInstr;
 
 typedef void (*ExecuteFn)(CPUState *cpu, Memory *mem, DecodedInstr *instr);
@@ -51,7 +56,18 @@ typedef struct {
     int32_t     funct7;   /* -1 means "don't care / not part of this encoding" */
     InstrFormat format;
     ExecuteFn   execute;
+    uint32_t    flags;       /* IF_* operand metadata */
+    uint32_t    rs2_sel;     /* fixed rs2 encoding when IF_RS2_FIXED */
 } InstructionHandler;
+
+enum {
+    IF_RD_FP      = 1u << 0,
+    IF_RS1_FP     = 1u << 1,
+    IF_RS2_FP     = 1u << 2,
+    IF_RS3_FP     = 1u << 3,
+    IF_HAS_RM     = 1u << 4,
+    IF_RS2_FIXED  = 1u << 5
+};
 
 #define ISA_REGISTRY_MAX 256
 
@@ -63,6 +79,7 @@ void isa_registry_init(void);
  * mnemonic lookups return the LAST mnemonic match, so a later registration
  * for the same mnemonic "wins" for the assembler. */
 int register_instruction(InstructionHandler handler);
+int register_instruction_ex(InstructionHandler handler, uint32_t flags, uint32_t rs2_sel);
 
 const InstructionHandler *isa_find_by_opcode(uint32_t opcode, uint32_t funct3, uint32_t funct7);
 const InstructionHandler *isa_find_by_mnemonic(const char *mnemonic);

@@ -8,3 +8,10 @@ got.txt
 pipe.txt
 EOF
 git status
+# Build and test artifacts
+*.o
+*.d
+rvsim
+rvsim-trace
+ref.txt
+got.txt
